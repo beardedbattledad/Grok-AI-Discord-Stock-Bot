@@ -1,4 +1,4 @@
 discord.py
 python-dotenv
 httpx
-openai
+xai-sdk
