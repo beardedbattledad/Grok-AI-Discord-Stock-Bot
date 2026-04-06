@@ -19,7 +19,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ====================== TOOL HELPERS ======================
+# ====================== DATA FETCHERS ======================
 async def get_flow_alerts(limit=200, ticker=None):
     try:
         headers = {"Authorization": f"Bearer {UW_API_KEY}"}
@@ -41,22 +41,24 @@ async def get_flow_alerts(limit=200, ticker=None):
         print(f"Flow fetch error: {e}")
         return []
 
-async def get_dark_pool(limit=15):
+async def get_dark_pool(limit=10):
     try:
         headers = {"Authorization": f"Bearer {UW_API_KEY}"}
         base_url = "https://api.unusualwhales.com"
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{base_url}/api/darkpool/recent", headers=headers, params={"limit": limit})
-            return resp.json() if resp.status_code == 200 else []
-    except:
+            data = resp.json() if resp.status_code == 200 else []
+            return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"Dark pool error: {e}")
         return []
 
 # ====================== SHORT ALERT FORMAT ======================
 def format_short_alert(trade):
     ticker = trade.get("ticker", "UNKNOWN")
-    expiry = trade.get("expiration", "")[:10]
+    expiry = str(trade.get("expiration", ""))[:10]
     strike = trade.get("strike_price", "")
-    option_type = "CALL" if trade.get("option_type", "").upper() == "CALL" else "PUT"
+    option_type = "CALL" if str(trade.get("option_type", "")).upper() == "CALL" else "PUT"
     side = "BULLISH" if option_type == "CALL" else "BEARISH"
     premium = trade.get("premium", 0)
     vol = trade.get("volume", 0)
@@ -86,7 +88,7 @@ async def auto_alert_scanner():
             vol = trade.get("volume", 0)
             oi = trade.get("open_interest", 1)
             premium = trade.get("premium", 0)
-            if vol > oi * 3 and premium > 50000:   # Basic high-conviction filter
+            if vol > oi * 3 and premium > 50000:
                 alert = format_short_alert(trade)
                 await channel.send(alert)
                 await asyncio.sleep(1.5)
@@ -111,19 +113,20 @@ async def on_message(message: discord.Message):
             pass
 
         try:
-            # ALWAYS pull fresh options flow data
+            # ALWAYS pull fresh options flow
             print("→ Fetching latest options flow for query")
             flow_data = await get_flow_alerts(limit=200)
 
-            # Optional extra tools if user asks for them
+            # Pull dark pool ONLY if specifically asked
             extra_context = ""
             if any(word in query.lower() for word in ["dark pool", "darkpool", "block", "institutional"]):
+                print("→ Fetching dark pool data")
                 dark_data = await get_dark_pool(limit=10)
                 extra_context = f"\n\nRecent Dark Pool prints:\n{json.dumps(dark_data[:8], default=str, indent=2)}"
 
-            # Build full context for Grok
+            # Build context
             context = f"Here is the most recent options flow data (last 200 trades):\n{json.dumps(flow_data, default=str, indent=2)}{extra_context}"
-            full_query = f"{query}\n\n{context}\n\nAnalyze this data concisely. Highlight only high-conviction unusual activity with specific numbers."
+            full_query = f"{query}\n\n{context}\n\nAnalyze concisely. Highlight only high-conviction unusual activity with specific numbers."
 
             # Call Grok
             async with httpx.AsyncClient(timeout=40.0) as client:
