@@ -19,49 +19,45 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# CUSTOM FILTERS (match what you set up in Unusual Whales)
-CUSTOM_FILTERS = [
-    {"name": "AI_ETF", "interval_seconds": 30},
-    {"name": "AI_Mega_Cap", "interval_seconds": 45},
-    {"name": "AI_Mid_Cap", "interval_seconds": 120},
-    {"name": "AI_Small_Cap", "interval_seconds": 180},
-]
-
-# YOUR TRADING RULES (applied ONLY to auto-alerts)
-TRADING_RULES = """
-HARD FILTERS - ONLY alert if ALL pass:
-1. Aggressive: Sweep or at/above ask (calls) or at/below bid (puts).
-2. New opening: Volume or contracts > Open Interest.
-3. No chasing: Today's move < |3%| (relaxed for ETFs).
-4. Premium tier: Large ≥$500K, Mid ≥$100K, Small ≥$50K, ETFs higher bar.
-Only directional flow (bullish calls or bearish puts). Be extremely short.
-"""
-
-# ====================== EXECUTE TOOL ======================
-async def get_flow_alerts(limit=200):
+# ====================== TOOL HELPERS ======================
+async def get_flow_alerts(limit=200, ticker=None):
     try:
         headers = {"Authorization": f"Bearer {UW_API_KEY}"}
         base_url = "https://api.unusualwhales.com"
-        url = f"{base_url}/api/option-trades/flow-alerts"
+        if ticker:
+            url = f"{base_url}/api/stock/{ticker.upper()}/flow-alerts"
+        else:
+            url = f"{base_url}/api/option-trades/flow-alerts"
         params = {"limit": limit}
 
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(url, headers=headers, params=params)
+            print(f"→ Flow API Status: {resp.status_code}")
             data = resp.json() if resp.status_code == 200 else {"error": resp.text}
             if isinstance(data, dict) and isinstance(data.get("data"), list):
-                return data["data"]
+                return data["data"][:150]
             return []
     except Exception as e:
         print(f"Flow fetch error: {e}")
         return []
 
-# ====================== SHORT ALERT FORMAT (Clean) ======================
+async def get_dark_pool(limit=15):
+    try:
+        headers = {"Authorization": f"Bearer {UW_API_KEY}"}
+        base_url = "https://api.unusualwhales.com"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{base_url}/api/darkpool/recent", headers=headers, params={"limit": limit})
+            return resp.json() if resp.status_code == 200 else []
+    except:
+        return []
+
+# ====================== SHORT ALERT FORMAT ======================
 def format_short_alert(trade):
     ticker = trade.get("ticker", "UNKNOWN")
     expiry = trade.get("expiration", "")[:10]
     strike = trade.get("strike_price", "")
     option_type = "CALL" if trade.get("option_type", "").upper() == "CALL" else "PUT"
-    side = "BULLISH" if (option_type == "CALL" and trade.get("side", "") == "ask") or (option_type == "PUT" and trade.get("side", "") == "bid") else "BEARISH"
+    side = "BULLISH" if option_type == "CALL" else "BEARISH"
     premium = trade.get("premium", 0)
     vol = trade.get("volume", 0)
     oi = trade.get("open_interest", 0)
@@ -81,27 +77,23 @@ def is_market_open():
 async def auto_alert_scanner():
     if not is_market_open():
         return
-
     channel = bot.get_channel(ALERT_CHANNEL_ID)
     if not channel:
         return
-
     try:
         trades = await get_flow_alerts(limit=200)
         for trade in trades:
-            # Simple rule filter (expand with full rules later)
             vol = trade.get("volume", 0)
             oi = trade.get("open_interest", 1)
             premium = trade.get("premium", 0)
-
-            if vol > oi * 3 and premium > 50000:  # Basic high-conviction filter
+            if vol > oi * 3 and premium > 50000:   # Basic high-conviction filter
                 alert = format_short_alert(trade)
                 await channel.send(alert)
-                await asyncio.sleep(1.5)  # Rate limit
+                await asyncio.sleep(1.5)
     except Exception as e:
         print(f"Scanner error: {e}")
 
-# ====================== CONVERSATIONAL MODE ======================
+# ====================== CONVERSATIONAL MODE (Always pulls options flow) ======================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -119,7 +111,22 @@ async def on_message(message: discord.Message):
             pass
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            # ALWAYS pull fresh options flow data
+            print("→ Fetching latest options flow for query")
+            flow_data = await get_flow_alerts(limit=200)
+
+            # Optional extra tools if user asks for them
+            extra_context = ""
+            if any(word in query.lower() for word in ["dark pool", "darkpool", "block", "institutional"]):
+                dark_data = await get_dark_pool(limit=10)
+                extra_context = f"\n\nRecent Dark Pool prints:\n{json.dumps(dark_data[:8], default=str, indent=2)}"
+
+            # Build full context for Grok
+            context = f"Here is the most recent options flow data (last 200 trades):\n{json.dumps(flow_data, default=str, indent=2)}{extra_context}"
+            full_query = f"{query}\n\n{context}\n\nAnalyze this data concisely. Highlight only high-conviction unusual activity with specific numbers."
+
+            # Call Grok
+            async with httpx.AsyncClient(timeout=40.0) as client:
                 resp = await client.post(
                     "https://api.x.ai/v1/chat/completions",
                     headers={
@@ -128,9 +135,9 @@ async def on_message(message: discord.Message):
                     },
                     json={
                         "model": "grok-4-fast-reasoning",
-                        "messages": [{"role": "user", "content": query}],
+                        "messages": [{"role": "user", "content": full_query}],
                         "temperature": 0.4,
-                        "max_tokens": 1000
+                        "max_tokens": 1200
                     }
                 )
 
