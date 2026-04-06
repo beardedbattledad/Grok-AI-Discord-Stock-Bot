@@ -20,20 +20,30 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# CUSTOM FILTERS (use the exact names you created in Unusual Whales)
+CUSTOM_FILTERS = [
+    {"name": "AI_ETF",        "min_premium": 1000000, "interval_seconds": 30},
+    {"name": "AI_Mega_Cap",   "min_premium": 500000,  "interval_seconds": 45},
+    {"name": "AI_Mid_Cap",    "min_premium": 100000,  "interval_seconds": 120},
+    {"name": "AI_Small_Cap",  "min_premium": 50000,   "interval_seconds": 180},
+]
+
 # ====================== DATA FETCHERS ======================
-async def get_flow_alerts(limit=200, ticker=None):
+async def get_flow_alerts(limit=200, ticker=None, min_premium=None):
     try:
         headers = {"Authorization": f"Bearer {UW_API_KEY}"}
         base_url = "https://api.unusualwhales.com"
         
         if ticker:
             url = f"{base_url}/api/stock/{ticker.upper()}/flow-alerts"
-            print(f"→ Ticker-specific flow for {ticker.upper()}")
+            print(f"→ Ticker-specific flow for {ticker}")
         else:
             url = f"{base_url}/api/option-trades/flow-alerts"
             print("→ Broad recent flow")
 
         params = {"limit": limit}
+        if min_premium is not None:
+            params["min_premium"] = min_premium
 
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(url, headers=headers, params=params)
@@ -46,7 +56,63 @@ async def get_flow_alerts(limit=200, ticker=None):
         print(f"Flow fetch error: {e}")
         return []
 
-# ====================== CONVERSATIONAL MODE (Improved Ticker Detection) ======================
+# ====================== SHORT ALERT FORMAT ======================
+def format_short_alert(trade):
+    ticker = trade.get("ticker", "UNKNOWN")
+    expiry = str(trade.get("expiration", ""))[:10]
+    strike = trade.get("strike_price", "")
+    option_type = "CALL" if str(trade.get("option_type", "")).upper() == "CALL" else "PUT"
+    side = "BULLISH" if option_type == "CALL" else "BEARISH"
+    premium = trade.get("premium", 0)
+    vol = trade.get("volume", 0)
+    oi = trade.get("open_interest", 0)
+    execution = "SWEEP" if trade.get("is_sweep") else "BLOCK"
+
+    return f"🚨 {ticker} {expiry} ${strike} {option_type} | {side} | Prem:${premium:,} | Vol/OI:{vol}/{oi} | {execution}"
+
+# ====================== MARKET HOURS ======================
+def is_market_open():
+    now = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=4)  # ET
+    if now.weekday() >= 5:
+        return False
+    return 9.5 <= (now.hour + now.minute / 60) <= 16.0
+
+# ====================== AUTO ALERT SCANNER ======================
+@tasks.loop(seconds=30)
+async def auto_alert_scanner():
+    if not is_market_open():
+        print("→ Scanner: Market closed, skipping")
+        return
+
+    channel = bot.get_channel(ALERT_CHANNEL_ID)
+    if not channel:
+        print("→ Scanner: Channel not found")
+        return
+
+    print("→ Starting alert scan cycle")
+
+    for f in CUSTOM_FILTERS:
+        try:
+            print(f"→ Scanning {f['name']} | min_premium={f['min_premium']}")
+            trades = await get_flow_alerts(limit=200, min_premium=f["min_premium"])
+            print(f"  Found {len(trades)} trades")
+
+            for trade in trades[:30]:   # limit to top 30 for speed
+                vol = trade.get("volume", 0)
+                oi = trade.get("open_interest", 1)
+                premium = trade.get("premium", 0)
+
+                if vol > oi * 3 and premium >= f["min_premium"]:
+                    alert = format_short_alert(trade)
+                    await channel.send(alert)
+                    print(f"  ALERT SENT: {trade.get('ticker')} | Prem:${premium:,}")
+                    await asyncio.sleep(1.5)
+        except Exception as e:
+            print(f"Scanner error for {f['name']}: {e}")
+
+    print("→ Scan cycle completed")
+
+# ====================== CONVERSATIONAL MODE ======================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -64,33 +130,24 @@ async def on_message(message: discord.Message):
             pass
 
         try:
-            # IMPROVED TICKER DETECTION - prioritize the most likely ticker
             ticker = None
-            # Look for common tickers (2-5 uppercase letters, not common words)
             candidates = re.findall(r'\b[A-Z]{2,5}\b', query)
-            if candidates:
-                # Take the first one that isn't a common word
-                common_words = {"THE", "AND", "FOR", "WITH", "WHAT", "ABOUT", "DEEP", "DIVE", "LIKE", "FLOW", "OPTIONS"}
-                for cand in candidates:
-                    if cand not in common_words:
-                        ticker = cand
-                        break
+            common_words = {"THE", "AND", "FOR", "WITH", "WHAT", "ABOUT", "DEEP", "DIVE", "LIKE", "FLOW", "OPTIONS"}
+            for cand in candidates:
+                if cand not in common_words:
+                    ticker = cand
+                    break
 
-            # ALWAYS pull flow — ticker-specific first if found
-            print(f"→ Fetching flow (ticker detected: {ticker})")
+            print(f"→ Fetching flow (ticker={ticker})")
             flow_data = await get_flow_alerts(limit=200, ticker=ticker)
 
             context = f"Here is the most recent options flow data:\n{json.dumps(flow_data, default=str, indent=2)}"
             full_query = f"{query}\n\n{context}\n\nProvide a concise, evidence-based analysis. Highlight only high-conviction setups with specific numbers."
 
-            # Call Grok
             async with httpx.AsyncClient(timeout=40.0) as client:
                 resp = await client.post(
                     "https://api.x.ai/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {XAI_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
+                    headers={"Authorization": f"Bearer {XAI_API_KEY}", "Content-Type": "application/json"},
                     json={
                         "model": "grok-4-fast-reasoning",
                         "messages": [{"role": "user", "content": full_query}],
@@ -127,5 +184,6 @@ async def send_long_message(channel, text):
 @bot.event
 async def on_ready():
     print(f"✅ Grok Bot is online as {bot.user}")
+    auto_alert_scanner.start()   # Start the alerts
 
 bot.run(DISCORD_TOKEN)
