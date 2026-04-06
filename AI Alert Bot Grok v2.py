@@ -9,17 +9,17 @@ import httpx
 
 load_dotenv()
 
-# ====================== CONFIG ======================
+# CONFIG
 XAI_API_KEY = os.getenv("XAI_API_KEY")
 UW_API_KEY = os.getenv("UW_API_KEY")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-ALERT_CHANNEL_ID = 1490357987154460862   # Your channel
+ALERT_CHANNEL_ID = 1490357987154460862
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ====================== CUSTOM FILTERS (You set these up in Unusual Whales) ======================
+# CUSTOM FILTERS (match what you set up in Unusual Whales)
 CUSTOM_FILTERS = [
     {"name": "AI_ETF", "interval_seconds": 30},
     {"name": "AI_Mega_Cap", "interval_seconds": 45},
@@ -27,19 +27,18 @@ CUSTOM_FILTERS = [
     {"name": "AI_Small_Cap", "interval_seconds": 180},
 ]
 
-# ====================== YOUR TRADING RULES (applied only to auto-alerts) ======================
+# YOUR TRADING RULES (applied ONLY to auto-alerts)
 TRADING_RULES = """
-HARD FILTERS (must pass ALL):
-1. Aggressive execution: Sweep or at/above ask (calls) or at/below bid (puts).
-2. New opening positions: Trade size or contract volume > current Open Interest.
-3. No chasing: Today's stock move < |3%| (or 60-min < |2%|) unless Major Index ETF.
-4. Premium meets tier (Micro < $10K ignore, Small ≥$50K, Mid ≥$100K, Large ≥$500K, ETFs higher bar).
-
-Only alert high-conviction directional flow. Be very short and data-style.
+HARD FILTERS - ONLY alert if ALL pass:
+1. Aggressive: Sweep or at/above ask (calls) or at/below bid (puts).
+2. New opening: Volume or contracts > Open Interest.
+3. No chasing: Today's move < |3%| (relaxed for ETFs).
+4. Premium tier: Large ≥$500K, Mid ≥$100K, Small ≥$50K, ETFs higher bar.
+Only directional flow (bullish calls or bearish puts). Be extremely short.
 """
 
-# ====================== TOOL (Unusual Whales) ======================
-async def get_flow_alerts(filter_name="broad", limit=200):
+# ====================== EXECUTE TOOL ======================
+async def get_flow_alerts(limit=200):
     try:
         headers = {"Authorization": f"Bearer {UW_API_KEY}"}
         base_url = "https://api.unusualwhales.com"
@@ -49,33 +48,33 @@ async def get_flow_alerts(filter_name="broad", limit=200):
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(url, headers=headers, params=params)
             data = resp.json() if resp.status_code == 200 else {"error": resp.text}
-
             if isinstance(data, dict) and isinstance(data.get("data"), list):
-                return data["data"][:150]
+                return data["data"]
             return []
     except Exception as e:
         print(f"Flow fetch error: {e}")
         return []
 
-# ====================== SHORT ALERT FORMAT ======================
+# ====================== SHORT ALERT FORMAT (Clean) ======================
 def format_short_alert(trade):
     ticker = trade.get("ticker", "UNKNOWN")
-    expiry = trade.get("expiry", "")
-    strike = trade.get("strike", "")
-    side = trade.get("side", "").upper()
+    expiry = trade.get("expiration", "")[:10]
+    strike = trade.get("strike_price", "")
+    option_type = "CALL" if trade.get("option_type", "").upper() == "CALL" else "PUT"
+    side = "BULLISH" if (option_type == "CALL" and trade.get("side", "") == "ask") or (option_type == "PUT" and trade.get("side", "") == "bid") else "BEARISH"
     premium = trade.get("premium", 0)
     vol = trade.get("volume", 0)
     oi = trade.get("open_interest", 0)
     execution = "SWEEP" if trade.get("is_sweep") else "BLOCK"
 
-    return f"🚨 {ticker} {expiry} ${strike} {side} | Prem:${premium:,} | Vol/OI:{vol}/{oi} | {execution}"
+    return f"🚨 {ticker} {expiry} ${strike} {option_type} | {side} | Prem:${premium:,} | Vol/OI:{vol}/{oi} | {execution}"
 
-# ====================== IS MARKET OPEN ======================
+# ====================== MARKET HOURS ======================
 def is_market_open():
     now = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=4)  # ET
-    if now.weekday() >= 5:  # Weekend
+    if now.weekday() >= 5:
         return False
-    return 9.5 <= now.hour + now.minute/60 <= 16.0
+    return 9.5 <= (now.hour + now.minute / 60) <= 16.0
 
 # ====================== AUTO ALERT SCANNER ======================
 @tasks.loop(seconds=30)
@@ -87,22 +86,22 @@ async def auto_alert_scanner():
     if not channel:
         return
 
-    for f in CUSTOM_FILTERS:
-        try:
-            trades = await get_flow_alerts(limit=200)
-            if not trades:
-                continue
+    try:
+        trades = await get_flow_alerts(limit=200)
+        for trade in trades:
+            # Simple rule filter (expand with full rules later)
+            vol = trade.get("volume", 0)
+            oi = trade.get("open_interest", 1)
+            premium = trade.get("premium", 0)
 
-            # Simple rule filter - expand with your full rules later
-            for trade in trades[:10]:  # Check top 10 per cycle
-                if trade.get("volume", 0) > trade.get("open_interest", 1) * 5:  # High vol/OI
-                    alert = format_short_alert(trade)
-                    await channel.send(alert)
-                    await asyncio.sleep(2)  # Avoid spam
-        except Exception as e:
-            print(f"Scanner error for {f['name']}: {e}")
+            if vol > oi * 3 and premium > 50000:  # Basic high-conviction filter
+                alert = format_short_alert(trade)
+                await channel.send(alert)
+                await asyncio.sleep(1.5)  # Rate limit
+    except Exception as e:
+        print(f"Scanner error: {e}")
 
-# ====================== CONVERSATIONAL MODE (Your Stable Version) ======================
+# ====================== CONVERSATIONAL MODE ======================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -163,6 +162,6 @@ async def send_long_message(channel, text):
 @bot.event
 async def on_ready():
     print(f"✅ Grok Bot is online as {bot.user}")
-    auto_alert_scanner.start()   # Start monitoring
+    auto_alert_scanner.start()
 
 bot.run(DISCORD_TOKEN)
