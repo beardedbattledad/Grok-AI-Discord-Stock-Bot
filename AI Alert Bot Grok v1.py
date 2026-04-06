@@ -23,7 +23,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 TOOLS = [
     {
         "name": "get_flow_alerts",
-        "description": "Get the most recent options flow activity.",
+        "description": "Get the most recent options flow activity. Default = last 200 trades (no time or premium filter unless asked).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -34,7 +34,7 @@ TOOLS = [
     }
 ]
 
-# ====================== EXECUTE TOOL (Unusual Whales) ======================
+# ====================== EXECUTE TOOL ======================
 async def execute_tool(tool_name: str, tool_input: dict):
     try:
         headers = {"Authorization": f"Bearer {UW_API_KEY}"}
@@ -64,7 +64,8 @@ async def execute_tool(tool_name: str, tool_input: dict):
                     return {
                         "count": len(results),
                         "samples": results[:100],
-                        "ticker": ticker or "broad"
+                        "ticker": ticker or "broad",
+                        "note": f"Most recent {len(results)} trades"
                     }
                 return data
 
@@ -73,7 +74,37 @@ async def execute_tool(tool_name: str, tool_input: dict):
         print(f"Tool error: {str(e)}")
         return {"error": str(e)}
 
-# ====================== CONVERSATIONAL MODE (Direct Grok Call) ======================
+# ====================== HANDLE TOOL LOOP (for Grok) ======================
+async def handle_tool_loop(response, messages):
+    # For direct HTTP Grok, we simulate simple tool use by checking if the model wants to call a tool
+    # But since Grok doesn't support tool calling in the same way as Claude in this setup, we manually call the tool if "flow" is in the query
+    if "flow" in messages[-1]["content"].lower() or "unusual" in messages[-1]["content"].lower() or "options" in messages[-1]["content"].lower():
+        print("Detected options flow request - calling tool")
+        tool_result = await execute_tool("get_flow_alerts", {"limit": 200})
+        tool_context = f"Here is the most recent options flow data:\n{json.dumps(tool_result, default=str, indent=2)}"
+        messages.append({"role": "user", "content": tool_context})
+
+        # Re-call Grok with the tool data
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://api.x.ai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {XAI_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "grok-4-fast-reasoning",
+                    "messages": messages,
+                    "temperature": 0.4,
+                    "max_tokens": 1000
+                }
+            )
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+
+    return response  # fallback
+
+# ====================== CONVERSATIONAL MODE ======================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -91,7 +122,9 @@ async def on_message(message: discord.Message):
             pass
 
         try:
-            # Direct call to Grok
+            messages = [{"role": "user", "content": query}]
+
+            # First call to Grok to see if it needs data
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
                     "https://api.x.ai/v1/chat/completions",
@@ -101,25 +134,24 @@ async def on_message(message: discord.Message):
                     },
                     json={
                         "model": "grok-4-fast-reasoning",
-                        "messages": [{"role": "user", "content": query}],
+                        "messages": messages,
                         "temperature": 0.4,
                         "max_tokens": 1000
                     }
                 )
 
-                if resp.status_code != 200:
-                    await message.reply(f"API error: {resp.status_code}")
-                    return
-
                 data = resp.json()
-                final_reply = data["choices"][0]["message"]["content"]
+                initial_reply = data["choices"][0]["message"]["content"]
+
+                final_reply = await handle_tool_loop(initial_reply, messages)
+
                 await send_long_message(message.channel, final_reply or "No strong signals found.")
 
         except Exception as e:
             print(f"Error: {e}")
             await message.reply("Sorry, I ran into an error while analyzing.")
 
-# ====================== SEND LONG MESSAGES (Fixed for Discord 2000 limit) ======================
+# ====================== SEND LONG MESSAGES (Fixed) ======================
 async def send_long_message(channel, text):
     if not text:
         await channel.send("No data available.")
