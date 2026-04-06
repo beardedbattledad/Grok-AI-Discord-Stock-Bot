@@ -4,14 +4,25 @@ import datetime
 import json
 from dotenv import load_dotenv
 import discord
-from discord.ext import commands
-from openai import AsyncOpenAI   # Grok uses OpenAI-compatible SDK
+from discord.ext import commands, tasks
+from openai import AsyncOpenAI   # Grok uses OpenAI-compatible client
 
 load_dotenv()
 
 # ====================== CONFIG ======================
-XAI_API_KEY = os.getenv("XAI_API_KEY")          # ← Your Grok/xAI API key
+XAI_API_KEY = os.getenv("XAI_API_KEY")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+ALERT_CHANNEL_ID = 1490357987154460862   # Your Grok alert channel
+
+# Custom filters with intervals
+CUSTOM_FILTERS = [
+    {"name": "AI ETF",      "interval_seconds": 30},
+    {"name": "AI Mega Cap", "interval_seconds": 45},
+    {"name": "AI Mid Cap",  "interval_seconds": 120},
+    {"name": "AI Small Cap","interval_seconds": 180},
+]
+
+TEST_MODE = False
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -23,11 +34,22 @@ GROK = AsyncOpenAI(
     base_url="https://api.x.ai/v1"
 )
 
-# ====================== TOOL DEFINITIONS (same as your stable version) ======================
+# ====================== YOUR STRICT RULES (Auto-alerts only) ======================
+TRADING_RULES = """
+Apply strictly for auto-alerts:
+- Tier by market cap or ETF type.
+- Major Index ETFs: ≥ $1M premium, relaxed chasing (|5%|).
+- Leveraged/Inverse ETFs: ≥ $100K, flag as high-vol speculative.
+- Hard filters: Aggressive sweep, new positions (vol > OI), no chasing (except ETFs), meets premium threshold.
+- Prefer directional flow. Flag likely hedges.
+Only alert if ALL hard filters pass with high conviction.
+"""
+
+# ====================== TOOLS ======================
 TOOLS = [
     {
         "name": "get_flow_alerts",
-        "description": "Get the most recent options flow activity. Default = last 200 trades (no premium or time filter unless asked).",
+        "description": "Get the most recent options flow activity. Default = last 200 trades.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -64,7 +86,7 @@ TOOLS = [
     }
 ]
 
-# ====================== EXECUTE TOOL (Same improved version you liked) ======================
+# ====================== EXECUTE TOOL ======================
 async def execute_tool(tool_name: str, tool_input: dict):
     try:
         import httpx
@@ -105,11 +127,11 @@ async def execute_tool(tool_name: str, tool_input: dict):
                         "count": len(results),
                         "samples": results[:150],
                         "ticker": ticker or "broad",
-                        "note": f"Most recent {len(results)} trades (no default time or premium filter)"
+                        "note": f"Most recent {len(results)} trades"
                     }
                 return data
 
-        # Keep your other tools unchanged
+        # Other tools unchanged
         elif tool_name == "get_dark_pool_trades":
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(f"{base_url}/api/darkpool/recent", headers=headers, params={"limit": tool_input.get("limit", 15)})
@@ -131,9 +153,78 @@ async def execute_tool(tool_name: str, tool_input: dict):
         print(f"Tool error: {str(e)}")
         return {"error": str(e)}
 
-# ====================== OPENAI-STYLE TOOL LOOP FOR GROK ======================
+# ====================== SHORT ALERT FORMAT ======================
+def format_short_alert(flow_item: dict) -> str:
+    ticker = flow_item.get("ticker", "N/A")
+    expiry = flow_item.get("expiration", "N/A")
+    strike = flow_item.get("strike", "N/A")
+    side = flow_item.get("side", "N/A").upper()
+    premium = flow_item.get("premium", "N/A")
+    vol_oi = flow_item.get("vol_oi_ratio", "N/A")
+    execution = flow_item.get("execution_type", "N/A")
+
+    return f"🚨 **{ticker}** {expiry} {strike} {side} | ${premium:,} | Vol/OI {vol_oi}x | {execution}"
+
+# ====================== MARKET HOURS ======================
+def is_market_open():
+    if TEST_MODE:
+        return True
+    now = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=4)
+    if now.weekday() >= 5:
+        return False
+    return (now.hour > 9 or (now.hour == 9 and now.minute >= 30)) and now.hour < 16
+
+# ====================== AUTO ALERT SCANNER ======================
+@tasks.loop(seconds=30)
+async def auto_alert_scanner():
+    if not is_market_open():
+        return
+
+    for f in CUSTOM_FILTERS:
+        filter_name = f["name"]
+        interval = f["interval_seconds"]
+
+        last_run_attr = f"last_run_{filter_name.replace(' ', '_')}"
+        if not hasattr(auto_alert_scanner, last_run_attr):
+            setattr(auto_alert_scanner, last_run_attr, datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=interval + 10))
+
+        last_run = getattr(auto_alert_scanner, last_run_attr)
+        if (datetime.datetime.now(datetime.UTC) - last_run).total_seconds() < interval:
+            continue
+
+        try:
+            tool_result = await execute_tool("get_flow_alerts", {})
+
+            if "error" in tool_result or not tool_result.get("samples"):
+                continue
+
+            system_prompt = f"""You are scanning flow for high-conviction alerts ONLY.
+Apply the user's strict Trading Rules exactly.
+Return ONLY a short alert if something passes ALL hard filters.
+If nothing meets criteria, return exactly: NO_ALERT"""
+
+            response = await GROK.chat.completions.create(
+                model="grok-beta",
+                messages=[{"role": "user", "content": f"Filter: {filter_name}\nData: {json.dumps(tool_result)}"}],
+                tools=TOOLS,
+                temperature=0.0,
+                max_tokens=400
+            )
+
+            reply = response.choices[0].message.content.strip()
+
+            if "NO_ALERT" not in reply and reply:
+                channel = bot.get_channel(ALERT_CHANNEL_ID)
+                if channel:
+                    await channel.send(format_short_alert(tool_result["samples"][0]))
+
+        except Exception as e:
+            print(f"Auto-alert error for {filter_name}: {e}")
+
+        setattr(auto_alert_scanner, last_run_attr, datetime.datetime.now(datetime.UTC))
+
+# ====================== CONVERSATIONAL MODE (same as your stable version) ======================
 async def handle_tool_loop(response, messages):
-    # Grok uses OpenAI-style tool calling
     if not response.choices[0].message.tool_calls:
         return response.choices[0].message.content
 
@@ -155,7 +246,6 @@ async def handle_tool_loop(response, messages):
     messages.append(response.choices[0].message)
     messages.extend(tool_results)
 
-    # Second call with tool results
     response = await GROK.chat.completions.create(
         model="grok-beta",
         messages=messages,
@@ -166,7 +256,6 @@ async def handle_tool_loop(response, messages):
 
     return response.choices[0].message.content
 
-# ====================== SEND LONG MESSAGES ======================
 async def send_long_message(channel, text):
     if len(text) <= 1900:
         await channel.send(text)
@@ -176,7 +265,6 @@ async def send_long_message(channel, text):
         prefix = f"**Part {i}/{len(chunks)}**\n" if len(chunks) > 1 else ""
         await channel.send(prefix + chunk)
 
-# ====================== ON MESSAGE ======================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -215,8 +303,25 @@ async def on_message(message: discord.Message):
             print(f"Error processing message: {e}")
             await message.reply("Sorry, I ran into an error while analyzing. Please try again.")
 
+# ====================== COMMANDS ======================
+@bot.command()
+async def testmode(ctx, state: str = "on"):
+    if ctx.author.id != 123456789012345678:  # Replace with your user ID if desired
+        return
+    global TEST_MODE
+    TEST_MODE = state.lower() in ["on", "true", "1", "yes"]
+    await ctx.send(f"Test Mode is now {'ON' if TEST_MODE else 'OFF'}")
+
+@bot.command()
+async def status(ctx):
+    await ctx.send(f"Bot Online • Test Mode: {'ON' if TEST_MODE else 'OFF'} • Market Open: {is_market_open()}")
+
+# ====================== STARTUP ======================
 @bot.event
 async def on_ready():
-    print(f"✅ Grok Bot is online as {bot.user} — Ready for DM tests and mentions!")
+    print(f"✅ Grok Bot is online as {bot.user}")
+    if not auto_alert_scanner.is_running():
+        auto_alert_scanner.start()
+        print("Auto-alert scanner started (Grok version)")
 
 bot.run(DISCORD_TOKEN)
