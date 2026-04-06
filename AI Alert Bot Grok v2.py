@@ -24,10 +24,14 @@ async def get_flow_alerts(limit=200, ticker=None):
     try:
         headers = {"Authorization": f"Bearer {UW_API_KEY}"}
         base_url = "https://api.unusualwhales.com"
+        
         if ticker:
             url = f"{base_url}/api/stock/{ticker.upper()}/flow-alerts"
+            print(f"→ Ticker-specific flow for {ticker}")
         else:
             url = f"{base_url}/api/option-trades/flow-alerts"
+            print("→ Broad recent flow")
+
         params = {"limit": limit}
 
         async with httpx.AsyncClient(timeout=20.0) as client:
@@ -95,7 +99,7 @@ async def auto_alert_scanner():
     except Exception as e:
         print(f"Scanner error: {e}")
 
-# ====================== CONVERSATIONAL MODE (Always pulls options flow) ======================
+# ====================== CONVERSATIONAL MODE ======================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -113,20 +117,33 @@ async def on_message(message: discord.Message):
             pass
 
         try:
-            # ALWAYS pull fresh options flow
-            print("→ Fetching latest options flow for query")
+            # ALWAYS pull broad recent flow by default
+            print("→ Fetching latest options flow")
             flow_data = await get_flow_alerts(limit=200)
 
-            # Pull dark pool ONLY if specifically asked
+            # Ticker-specific if mentioned
+            ticker = None
+            words = query.upper().split()
+            for word in words:
+                if word.isalpha() and len(word) >= 2 and len(word) <= 5:
+                    ticker = word
+                    break
+            if ticker:
+                print(f"→ Also fetching ticker-specific for {ticker}")
+                ticker_flow = await get_flow_alerts(limit=100, ticker=ticker)
+                if ticker_flow:
+                    flow_data = ticker_flow + flow_data  # combine
+
+            # Dark pool only if asked
             extra_context = ""
             if any(word in query.lower() for word in ["dark pool", "darkpool", "block", "institutional"]):
-                print("→ Fetching dark pool data")
+                print("→ Fetching dark pool")
                 dark_data = await get_dark_pool(limit=10)
                 extra_context = f"\n\nRecent Dark Pool prints:\n{json.dumps(dark_data[:8], default=str, indent=2)}"
 
-            # Build context
-            context = f"Here is the most recent options flow data (last 200 trades):\n{json.dumps(flow_data, default=str, indent=2)}{extra_context}"
-            full_query = f"{query}\n\n{context}\n\nAnalyze concisely. Highlight only high-conviction unusual activity with specific numbers."
+            # Build context for Grok
+            context = f"Here is the most recent options flow data:\n{json.dumps(flow_data, default=str, indent=2)}{extra_context}"
+            full_query = f"{query}\n\n{context}\n\nProvide a concise, evidence-based analysis. Highlight only high-conviction setups with specific numbers."
 
             # Call Grok
             async with httpx.AsyncClient(timeout=40.0) as client:
