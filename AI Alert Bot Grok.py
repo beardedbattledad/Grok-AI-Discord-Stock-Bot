@@ -9,26 +9,38 @@ from xai_sdk import AsyncClient   # Official xAI SDK
 
 load_dotenv()
 
-# ====================== CONFIG ======================
-XAI_API_KEY = os.getenv("XAI_API_KEY")
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-ALERT_CHANNEL_ID = 1490357987154460862
+# ====================== CONVERSATIONAL MODE (Fixed for xAI SDK) ======================
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
 
-CUSTOM_FILTERS = [
-    {"name": "AI ETF",      "interval_seconds": 30},
-    {"name": "AI Mega Cap", "interval_seconds": 45},
-    {"name": "AI Mid Cap",  "interval_seconds": 120},
-    {"name": "AI Small Cap","interval_seconds": 180},
-]
+    if bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel):
+        query = message.clean_content.replace(f"<@{bot.user.id}>", "").strip()
+        if not query:
+            return
 
-TEST_MODE = False
+        try:
+            async with message.channel.typing():
+                pass
+        except:
+            pass
 
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+        try:
+            # Correct xAI SDK usage
+            response = await xai_client.chat.completions.create(
+                model="grok-beta",
+                messages=[{"role": "user", "content": query}],
+                temperature=0.4,
+                max_tokens=1000
+            )
 
-# Official xAI SDK Client
-xai_client = AsyncClient(api_key=XAI_API_KEY)
+            final_reply = response.choices[0].message.content
+            await message.channel.send(final_reply or "No strong signals found.")
+
+        except Exception as e:
+            print(f"Error: {e}")
+            await message.reply("Sorry, I ran into an error while analyzing.")
 
 # ====================== SHORT ALERT FORMAT ======================
 def format_short_alert(flow_item: dict) -> str:
