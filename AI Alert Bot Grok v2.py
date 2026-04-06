@@ -2,6 +2,7 @@ import os
 import asyncio
 import datetime
 import json
+import re
 from dotenv import load_dotenv
 import discord
 from discord.ext import commands, tasks
@@ -117,22 +118,16 @@ async def on_message(message: discord.Message):
             pass
 
         try:
-            # ALWAYS pull broad recent flow by default
-            print("→ Fetching latest options flow")
-            flow_data = await get_flow_alerts(limit=200)
-
-            # Ticker-specific if mentioned
+            # IMPROVED TICKER DETECTION
             ticker = None
-            words = query.upper().split()
-            for word in words:
-                if word.isalpha() and len(word) >= 2 and len(word) <= 5:
-                    ticker = word
-                    break
-            if ticker:
-                print(f"→ Also fetching ticker-specific for {ticker}")
-                ticker_flow = await get_flow_alerts(limit=100, ticker=ticker)
-                if ticker_flow:
-                    flow_data = ticker_flow + flow_data  # combine
+            # Look for 2-5 uppercase letters (common ticker pattern)
+            potential_tickers = re.findall(r'\b[A-Z]{2,5}\b', query)
+            if potential_tickers:
+                ticker = potential_tickers[0]  # take the first one found
+
+            # ALWAYS pull flow (ticker-specific if found, otherwise broad)
+            print(f"→ Fetching flow (ticker={ticker})")
+            flow_data = await get_flow_alerts(limit=200, ticker=ticker)
 
             # Dark pool only if asked
             extra_context = ""
@@ -141,7 +136,7 @@ async def on_message(message: discord.Message):
                 dark_data = await get_dark_pool(limit=10)
                 extra_context = f"\n\nRecent Dark Pool prints:\n{json.dumps(dark_data[:8], default=str, indent=2)}"
 
-            # Build context for Grok
+            # Build context (ticker data first if available)
             context = f"Here is the most recent options flow data:\n{json.dumps(flow_data, default=str, indent=2)}{extra_context}"
             full_query = f"{query}\n\n{context}\n\nProvide a concise, evidence-based analysis. Highlight only high-conviction setups with specific numbers."
 
