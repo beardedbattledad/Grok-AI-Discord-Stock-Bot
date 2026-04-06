@@ -5,122 +5,35 @@ import json
 from dotenv import load_dotenv
 import discord
 from discord.ext import commands
-import httpx
+from anthropic import AsyncAnthropic
 
 load_dotenv()
 
-# ====================== CONFIG ======================
-XAI_API_KEY = os.getenv("XAI_API_KEY")
+# CONFIG
 UW_API_KEY = os.getenv("UW_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-ALERT_CHANNEL_ID = 1490357987154460862
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+ANTHROPIC = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+
 # ====================== TOOL DEFINITIONS ======================
 TOOLS = [
     {
         "name": "get_flow_alerts",
-        "description": "Get the most recent options flow activity.",
-        "parameters": {
+        "description": "Get the most recent options flow activity. Default = last 200 trades.",
+        "input_schema": {
             "type": "object",
             "properties": {
                 "ticker": {"type": "string", "description": "Specific ticker like DVN (optional)"},
+                "since_hours": {"type": "integer", "description": "Only use if user specifically asks for a time window"},
+                "min_premium": {"type": "integer", "description": "Minimum premium — only use if user asks"},
                 "limit": {"type": "integer", "default": 200}
             }
         }
-    }
-]
-
-# ====================== EXECUTE TOOL (Unusual Whales) ======================
-async def execute_tool(tool_name: str, tool_input: dict):
-    try:
-        headers = {"Authorization": f"Bearer {UW_API_KEY}"}
-        base_url = "https://api.unusualwhales.com"
-
-        if tool_name == "get_flow_alerts":
-            ticker = tool_input.get("ticker")
-            limit = min(tool_input.get("limit", 200), 200)
-
-            if ticker:
-                url = f"{base_url}/api/stock/{ticker.upper()}/flow-alerts"
-            else:
-                url = f"{base_url}/api/option-trades/flow-alerts"
-
-            params = {"limit": limit}
-
-            print(f"→ Calling {url} | limit={limit}")
-
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                resp = await client.get(url, headers=headers, params=params)
-                print(f"→ Status: {resp.status_code}")
-
-                data = resp.json() if resp.status_code == 200 else {"error": resp.text}
-
-                if isinstance(data, dict) and isinstance(data.get("data"), list):
-                    results = data["data"]
-                    return {
-                        "count": len(results),
-                        "samples": results[:100],
-                        "ticker": ticker or "broad"
-                    }
-                return data
-
-        return {"error": "Unknown tool"}
-    except Exception as e:
-        print(f"Tool error: {str(e)}")
-        return {"error": str(e)}
-
-# ====================== CONVERSATIONAL MODE (Direct Grok Call) ======================
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot:
-        return
-
-    if bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel):
-        query = message.clean_content.replace(f"<@{bot.user.id}>", "").strip()
-        if not query:
-            return
-
-        try:
-            async with message.channel.typing():
-                pass
-        except:
-            pass
-
-        try:
-            # Direct call to Grok
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    "https://api.x.ai/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {XAI_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "grok-4-fast-reasoning",   # Best available model from your screenshot
-                        "messages": [{"role": "user", "content": query}],
-                        "temperature": 0.4,
-                        "max_tokens": 1000
-                    }
-                )
-
-                if resp.status_code != 200:
-                    await message.reply(f"API error: {resp.status_code}")
-                    return
-
-                data = resp.json()
-                final_reply = data["choices"][0]["message"]["content"]
-                await message.channel.send(final_reply or "No strong signals found.")
-
-        except Exception as e:
-            print(f"Error: {e}")
-            await message.reply("Sorry, I ran into an error while analyzing.")
-
-@bot.event
-async def on_ready():
-    print(f"✅ Grok Bot is online as {bot.user} — Ready for DM tests and mentions!")
-
-bot.run(DISCORD_TOKEN)
+    },
+    {
+        "name": "get
