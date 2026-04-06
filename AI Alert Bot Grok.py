@@ -111,7 +111,6 @@ async def on_message(message: discord.Message):
             pass
 
         try:
-            # Direct HTTP call to Grok (xAI API)
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
                     "https://api.x.ai/v1/chat/completions",
@@ -127,7 +126,11 @@ async def on_message(message: discord.Message):
                     }
                 )
 
+                print(f"Grok API Status: {resp.status_code}")   # Important for logs
+
                 if resp.status_code != 200:
+                    error_body = resp.text[:500]
+                    print(f"Grok API Error Body: {error_body}")
                     await message.reply(f"API error: {resp.status_code}")
                     return
 
@@ -136,7 +139,7 @@ async def on_message(message: discord.Message):
                 await send_long_message(message.channel, final_reply or "No strong signals found.")
 
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Error: {str(e)}")
             await message.reply("Sorry, I ran into an error while analyzing.")
 
 # ====================== SEND LONG MESSAGES ======================
