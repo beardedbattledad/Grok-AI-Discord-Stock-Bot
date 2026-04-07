@@ -20,8 +20,8 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# YOUR EXACT CUSTOM ALERT NAMES
-CUSTOM_ALERT_NAMES = ["AI Mid Cap", "AI Small Cap", "AI ETF"]
+# YOUR EXACT CUSTOM ALERT NAMES (added AI Mega Cap)
+CUSTOM_ALERT_NAMES = ["AI Mid Cap", "AI Small Cap", "AI ETF", "AI Mega Cap"]
 
 # MAJOR INDEX ETFs
 MAJOR_ETFS = {"SPY", "QQQ", "SOXX", "TQQQ", "SPXU", "SQQQ", "SOXS", "SPXS", "IWM", "DIA", "XLK", "XLF"}
@@ -121,7 +121,6 @@ def format_short_alert(trade):
     ticker = trade.get("symbol", "UNKNOWN")
     expiry = str(meta.get("expiration", trade.get("created_at", "")))[:10]
     strike = meta.get("strike_price", "")
-    # Parse option_type from meta OR symbol (QQQ...P... = PUT, QQQ...C... = CALL)
     option_type = str(meta.get("option_type", meta.get("type", ""))).upper()
     if option_type not in ["CALL", "PUT"]:
         symbol_str = str(trade.get("symbol", ""))
@@ -169,21 +168,26 @@ async def auto_alert_scanner():
         oi = meta.get("open_interest", 1)
         premium = meta.get("total_premium", 0)
         is_sweep = meta.get("has_sweep") or meta.get("is_sweep", False)
-        side_raw = str(meta.get("side", "")).lower()
+        
+        # Try multiple possible side field names
+        side_raw = str(meta.get("side", meta.get("execution_side", meta.get("side", "")))).lower()
+        
         option_type = str(meta.get("option_type", meta.get("type", ""))).upper()
-
-        # Fallback option_type from symbol (e.g. QQQ...P... = PUT)
         if option_type not in ["CALL", "PUT"]:
             symbol_str = str(trade.get("symbol", ""))
             if 'P' in symbol_str[-15:]:
                 option_type = "PUT"
             elif 'C' in symbol_str[-15:]:
                 option_type = "CALL"
+            else:
+                option_type = "UNKNOWN"
 
-        # Safe today_move (option move or underlying — whichever exists)
+        # Underlying stock move (not option price change)
         today_move = safe_float(meta.get("underlying_change_percent"))
         if today_move == 0.0:
             today_move = safe_float(meta.get("diff"))
+        if today_move == 0.0:
+            today_move = safe_float(meta.get("close_change_percent", meta.get("percent_change", 0)))
 
         print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Side:{side_raw} | Type:{option_type} | Prem:{premium}")
 
@@ -204,10 +208,10 @@ async def auto_alert_scanner():
             if not is_sweep or vol <= oi * 5 or premium < 200000:
                 continue
 
-        # Directional (fallback if side is missing)
+        # Directional
         is_directional = (option_type == "CALL" and side_raw == "ask") or (option_type == "PUT" and side_raw == "ask")
         if not is_directional and side_raw == "":
-            is_directional = True  # temporary fallback so alerts can fire while we observe
+            is_directional = True  # temporary fallback while we observe real side values
 
         if not is_directional:
             continue
