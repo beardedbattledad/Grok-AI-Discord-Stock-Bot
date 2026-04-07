@@ -169,8 +169,8 @@ async def auto_alert_scanner():
         premium = meta.get("total_premium", 0)
         is_sweep = meta.get("has_sweep") or meta.get("is_sweep", False)
         
-        # Try multiple possible side field names
-        side_raw = str(meta.get("side", meta.get("execution_side", meta.get("side", "")))).lower()
+        # Robust side detection - try multiple possible field names
+        side_raw = str(meta.get("side", meta.get("execution_side", meta.get("trade_side", meta.get("side", ""))))).lower()
         
         option_type = str(meta.get("option_type", meta.get("type", ""))).upper()
         if option_type not in ["CALL", "PUT"]:
@@ -208,10 +208,10 @@ async def auto_alert_scanner():
             if not is_sweep or vol <= oi * 5 or premium < 200000:
                 continue
 
-        # Directional
+        # Directional (temporary fallback if side is still blank)
         is_directional = (option_type == "CALL" and side_raw == "ask") or (option_type == "PUT" and side_raw == "ask")
         if not is_directional and side_raw == "":
-            is_directional = True  # temporary fallback while we observe real side values
+            is_directional = True   # Allow alerts while we debug real side values
 
         if not is_directional:
             continue
