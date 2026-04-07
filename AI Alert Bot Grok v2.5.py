@@ -23,7 +23,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # YOUR EXACT CUSTOM ALERT NAMES
 CUSTOM_ALERT_NAMES = ["AI Mid Cap", "AI Small Cap", "AI ETF"]
 
-# MAJOR INDEX ETFs (relaxed no-chasing)
+# MAJOR INDEX ETFs
 MAJOR_ETFS = {"SPY", "QQQ", "SOXX", "TQQQ", "SPXU", "SQQQ", "SOXS", "SPXS", "IWM", "DIA", "XLK", "XLF"}
 
 alert_configs = {}
@@ -48,8 +48,6 @@ async def load_alert_configs():
                         loaded += 1
                         print(f"  Loaded: '{name}' (ID: {aid})")
                 print(f"✅ Loaded {loaded} matching custom alerts")
-            else:
-                print(f"Failed to load configs: {resp.status_code}")
     except Exception as e:
         print(f"Config load error: {e}")
 
@@ -89,7 +87,7 @@ async def get_custom_alerts():
         print(f"Custom alerts fetch error: {e}")
         return []
 
-# ====================== GENERAL FLOW (for conversational mode only) ======================
+# ====================== GENERAL FLOW ======================
 async def get_flow_alerts(limit=200, ticker=None):
     try:
         headers = {"Authorization": f"Bearer {UW_API_KEY}"}
@@ -111,7 +109,7 @@ async def get_flow_alerts(limit=200, ticker=None):
         print(f"General flow error: {e}")
         return []
 
-# ====================== HELPER FUNCTIONS ======================
+# ====================== HELPERS ======================
 def format_short_alert(trade):
     meta = trade.get("meta", {}) if isinstance(trade.get("meta"), dict) else {}
     ticker = trade.get("symbol", "UNKNOWN")
@@ -126,6 +124,12 @@ def format_short_alert(trade):
 
     return f"🚨 {ticker} {expiry} ${strike} {option_type} | {side} | Prem:${premium:,} | Vol/OI:{vol}/{oi} | {execution}"
 
+def safe_float(value, default=0.0):
+    try:
+        return float(value) if value is not None else default
+    except (ValueError, TypeError):
+        return default
+
 def is_market_open():
     now = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=4)  # ET
     if now.weekday() >= 5:
@@ -133,7 +137,7 @@ def is_market_open():
     hour = now.hour + now.minute / 60.0
     return 9.5 <= hour <= 16.0
 
-# ====================== AUTO ALERT SCANNER (Custom Alerts ONLY) ======================
+# ====================== AUTO ALERT SCANNER ======================
 @tasks.loop(seconds=30)
 async def auto_alert_scanner():
     if not is_market_open():
@@ -158,20 +162,24 @@ async def auto_alert_scanner():
         is_sweep = meta.get("has_sweep") or meta.get("is_sweep", False)
         side = str(meta.get("side", "")).lower()
         option_type = str(meta.get("option_type", "")).upper()
-        today_move = abs(meta.get("underlying_change_percent", meta.get("diff", 0)))
+
+        # Safe today_move
+        today_move = safe_float(meta.get("underlying_change_percent"))
+        if today_move == 0.0:
+            today_move = safe_float(meta.get("diff"))
 
         print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Side:{side} | Type:{option_type} | Prem:{premium}")
 
-        # Aggressive execution (sweeps preferred but not required)
+        # Aggressive execution
         aggressive = is_sweep or ((option_type == "CALL" and side == "ask") or (option_type == "PUT" and side == "bid"))
         if not aggressive:
             continue
 
-        # New opening positions
+        # New opening
         if vol <= oi:
             continue
 
-        # No-chasing (loosened as requested)
+        # No-chasing (loosened)
         is_major_etf = ticker in MAJOR_ETFS
         if today_move > 5:
             continue
@@ -197,7 +205,7 @@ async def auto_alert_scanner():
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# ====================== CONVERSATIONAL MODE (BOTH general + custom) ======================
+# ====================== CONVERSATIONAL MODE ======================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -253,7 +261,6 @@ async def on_message(message: discord.Message):
             print(f"Error processing message: {e}")
             await message.reply("Sorry, I ran into an error while analyzing.")
 
-# ====================== SEND LONG MESSAGES ======================
 async def send_long_message(channel, text):
     if not text:
         await channel.send("No data available.")
