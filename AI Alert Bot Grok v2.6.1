@@ -110,7 +110,7 @@ def safe_int(value, default=0):
 
 def format_short_alert(trade):
     meta = trade.get("meta", {}) if isinstance(trade.get("meta"), dict) else {}
-    ticker = str(trade.get("symbol", "UNKNOWN"))
+    ticker = str(trade.get("symbol", "UNKNOWN")).split()[0]  # Clean ticker only
     expiry = str(meta.get("expiration", trade.get("created_at", "")))[:10]
     strike = meta.get("strike_price", "")
     option_type = str(meta.get("option_type", meta.get("type", ""))).upper()
@@ -137,6 +137,14 @@ def is_market_open():
     hour = now.hour + now.minute / 60.0
     return 9.5 <= hour <= 16.0
 
+def days_to_expiry(expiry_str):
+    try:
+        expiry_date = datetime.datetime.strptime(expiry_str[:10], "%Y-%m-%d").date()
+        today = datetime.date.today()
+        return (expiry_date - today).days
+    except:
+        return 999
+
 @tasks.loop(seconds=30)
 async def auto_alert_scanner():
     if not is_market_open():
@@ -154,7 +162,7 @@ async def auto_alert_scanner():
     alert_count = 0
     for trade in triggered[:60]:
         meta = trade.get("meta", {}) if isinstance(trade.get("meta"), dict) else {}
-        ticker = str(trade.get("symbol", "")).upper()
+        ticker = str(trade.get("symbol", "")).upper().split()[0]
         vol = safe_int(meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0)))
         oi = safe_int(meta.get("open_interest", 1))
         premium = safe_int(meta.get("total_premium", 0))
@@ -177,30 +185,37 @@ async def auto_alert_scanner():
         if today_move == 0.0:
             today_move = safe_float(meta.get("diff"))
 
-        print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f} | Type:{option_type} | Prem:{premium}")
+        dte = days_to_expiry(str(meta.get("expiration", "")))
 
-        # Aggressive
-        aggressive = is_sweep or (ask_percent > 60) or (bid_percent > 60)
-        if not aggressive:
-            continue
+        print(f"    Checking {ticker} | DTE:{dte} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f} | Prem:{premium}")
 
-        # New opening
-        if vol <= oi:
-            continue
+        # STRICT SHORT-TERM RULES (< 3 DTE)
+        if dte <= 3:
+            if premium < 500000 or vol <= oi * 3 or not is_sweep or max(ask_percent, bid_percent) < 70:
+                continue
+            print(f"    → Short-dated strict pass for {ticker}")
 
-        # No-chasing
-        is_major_etf = ticker in MAJOR_ETFS
-        if today_move > 5:
-            continue
-        elif today_move > 3:
-            if not is_sweep or vol <= oi * 5 or premium < 200000:
+        # NORMAL RULES for longer-dated
+        else:
+            aggressive = is_sweep or (ask_percent > 60) or (bid_percent > 60)
+            if not aggressive:
                 continue
 
-        # Directional using ask/bid percentages
+            if vol <= oi:
+                continue
+
+            is_major_etf = ticker in MAJOR_ETFS
+            if today_move > 5:
+                continue
+            elif today_move > 3:
+                if not is_sweep or vol <= oi * 5 or premium < 200000:
+                    continue
+
+        # Directional using ask/bid %
         is_directional = False
         if option_type == "CALL":
             is_directional = ask_percent > 50
-        else:  # PUT
+        else:
             is_directional = bid_percent > 50
 
         if not is_directional:
@@ -219,7 +234,7 @@ async def auto_alert_scanner():
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# Conversational mode
+# Conversational mode (unchanged)
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
