@@ -130,7 +130,14 @@ def format_short_alert(trade):
     meta = trade.get("meta", {}) if isinstance(trade.get("meta"), dict) else {}
     ticker = clean_ticker(trade.get("symbol"))
     expiry = str(meta.get("expiration", trade.get("created_at", "")))[:10]
-    strike = safe_int(meta.get("strike_price"), "N/A")
+    
+    # Robust strike price lookup - try multiple possible keys
+    strike = "N/A"
+    for key in ["strike_price", "strike", "strikeprice", "K"]:
+        if key in meta:
+            strike = safe_int(meta[key], "N/A")
+            break
+
     option_type = str(meta.get("option_type", meta.get("type", ""))).upper()
     if option_type not in ["CALL", "PUT"]:
         symbol_str = str(trade.get("symbol", ""))
@@ -205,7 +212,7 @@ async def auto_alert_scanner():
 
         dte = days_to_expiry(str(meta.get("expiration", "")))
 
-        print(f"    Checking {ticker} | DTE:{dte} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f} | Prem:{premium}")
+        print(f"    Checking {ticker} | DTE:{dte} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f} | Prem:{premium} | Strike keys checked")
 
         # 0 DTE — ULTRA STRICT
         if dte == 0:
@@ -248,7 +255,7 @@ async def auto_alert_scanner():
         alert = format_short_alert(trade)
         await channel.send(alert)
         alert_count += 1
-        print(f"  ✅ ALERT SENT: {ticker} | DTE:{dte} | Prem:${premium:,} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f}")
+        print(f"  ✅ ALERT SENT: {ticker} | Prem:${premium:,} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f}")
         await asyncio.sleep(1.5)
 
     if alert_count == 0:
