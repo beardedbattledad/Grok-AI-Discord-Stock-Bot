@@ -20,7 +20,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# YOUR EXACT CUSTOM ALERT NAMES (added AI Mega Cap)
+# YOUR EXACT CUSTOM ALERT NAMES
 CUSTOM_ALERT_NAMES = ["AI Mid Cap", "AI Small Cap", "AI ETF", "AI Mega Cap"]
 
 # MAJOR INDEX ETFs
@@ -75,12 +75,10 @@ async def get_custom_alerts():
             trades = data.get("data", []) if isinstance(data, dict) else []
             print(f"  Received {len(trades)} raw trades from custom alerts")
 
-            if trades:
-                print(f"  First trade keys: {list(trades[0].keys())}")
-                if 'meta' in trades[0]:
-                    meta = trades[0]['meta']
-                    print(f"  Meta keys: {list(meta.keys())}")
-                    print(f"  Sample meta: {json.dumps(meta, default=str, indent=2)[:1200]}...")
+            if trades and 'meta' in trades[0]:
+                meta = trades[0]['meta']
+                print(f"  Meta keys: {list(meta.keys())}")
+                print(f"  Sample meta: {json.dumps(meta, default=str, indent=2)[:1500]}...")
 
             return trades
     except Exception as e:
@@ -135,8 +133,12 @@ def format_short_alert(trade):
     vol = meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0))
     oi = meta.get("open_interest", 1)
     execution = "SWEEP" if meta.get("has_sweep") or meta.get("is_sweep") else "BLOCK"
+    avg_fill = meta.get("avg_fill", "")
 
-    return f"🚨 {ticker} {expiry} ${strike} {option_type} | {side} | Prem:${premium:,} | Vol/OI:{vol}/{oi} | {execution}"
+    alert = f"🚨 {ticker} {expiry} ${strike} {option_type} | {side} | Prem:${premium:,} | Vol/OI:{vol}/{oi} | {execution}"
+    if avg_fill:
+        alert += f" | AvgFill:{avg_fill}"
+    return alert
 
 def is_market_open():
     now = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=4)  # ET
@@ -169,8 +171,8 @@ async def auto_alert_scanner():
         premium = meta.get("total_premium", 0)
         is_sweep = meta.get("has_sweep") or meta.get("is_sweep", False)
         
-        # Robust side detection - try multiple possible field names
-        side_raw = str(meta.get("side", meta.get("execution_side", meta.get("trade_side", meta.get("side", ""))))).lower()
+        # Side: use your exact requested fields
+        side_raw = str(meta.get("execution_side", meta.get("trade_side", meta.get("side", "")))).lower()
         
         option_type = str(meta.get("option_type", meta.get("type", ""))).upper()
         if option_type not in ["CALL", "PUT"]:
@@ -182,14 +184,18 @@ async def auto_alert_scanner():
             else:
                 option_type = "UNKNOWN"
 
-        # Underlying stock move (not option price change)
-        today_move = safe_float(meta.get("underlying_change_percent"))
+        # Decision-making fields from your list
+        underlying_change = safe_float(meta.get("underlying_change_percent"))
+        vol_oi_ratio = safe_float(meta.get("vol_oi_ratio"))
+        iv = safe_float(meta.get("iv"))
+        iv_change = safe_float(meta.get("iv_change"))
+
+        # Move fallback
+        today_move = underlying_change
         if today_move == 0.0:
             today_move = safe_float(meta.get("diff"))
-        if today_move == 0.0:
-            today_move = safe_float(meta.get("close_change_percent", meta.get("percent_change", 0)))
 
-        print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Side:{side_raw} | Type:{option_type} | Prem:{premium}")
+        print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Side:{side_raw} | Type:{option_type} | Prem:{premium} | Vol/OI Ratio:{vol_oi_ratio}")
 
         # Aggressive execution
         aggressive = is_sweep or ((option_type == "CALL" and side_raw == "ask") or (option_type == "PUT" and side_raw == "bid"))
@@ -200,7 +206,7 @@ async def auto_alert_scanner():
         if vol <= oi:
             continue
 
-        # No-chasing (loosened)
+        # No-chasing using underlying_change_percent
         is_major_etf = ticker in MAJOR_ETFS
         if today_move > 5:
             continue
@@ -208,10 +214,10 @@ async def auto_alert_scanner():
             if not is_sweep or vol <= oi * 5 or premium < 200000:
                 continue
 
-        # Directional (temporary fallback if side is still blank)
+        # Directional (use execution_side / trade_side)
         is_directional = (option_type == "CALL" and side_raw == "ask") or (option_type == "PUT" and side_raw == "ask")
         if not is_directional and side_raw == "":
-            is_directional = True   # Allow alerts while we debug real side values
+            is_directional = True  # temporary fallback
 
         if not is_directional:
             continue
