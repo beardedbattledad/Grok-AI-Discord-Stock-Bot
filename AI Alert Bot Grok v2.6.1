@@ -87,6 +87,27 @@ async def get_custom_alerts():
         print(f"Custom alerts fetch error: {e}")
         return []
 
+async def get_flow_alerts(limit=200, ticker=None):
+    try:
+        headers = {"Authorization": f"Bearer {UW_API_KEY}"}
+        base_url = "https://api.unusualwhales.com"
+        if ticker:
+            url = f"{base_url}/api/stock/{ticker.upper()}/flow-alerts"
+        else:
+            url = f"{base_url}/api/option-trades/flow-alerts"
+        params = {"limit": limit}
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            print(f"→ General Flow API Status: {resp.status_code}")
+            data = resp.json() if resp.status_code == 200 else {"error": resp.text}
+            if isinstance(data, dict) and isinstance(data.get("data"), list):
+                return data["data"][:150]
+            return []
+    except Exception as e:
+        print(f"General flow error: {e}")
+        return []
+
 def safe_float(value, default=0.0):
     try:
         return float(value) if value is not None else default
@@ -110,16 +131,12 @@ def format_short_alert(trade):
     ticker = clean_ticker(trade.get("symbol"))
     expiry = str(meta.get("expiration", trade.get("created_at", "")))[:10]
 
-    # === ROBUST STRIKE LOOKUP - TRY EVERY POSSIBLE KEY ===
+    # Robust strike lookup
     strike = "N/A"
-    strike_keys = ["strike_price", "strike", "strikeprice", "K", "strikePrice", "strike_price"]
-    for key in strike_keys:
+    for key in ["strike_price", "strike", "strikeprice", "K", "strikePrice"]:
         if key in meta:
             strike = safe_int(meta[key], "N/A")
-            print(f"    → Strike found using key '{key}': ${strike}")
             break
-    if strike == "N/A":
-        print(f"    → No strike key found. Available meta keys: {list(meta.keys())}")
 
     option_type = str(meta.get("option_type", meta.get("type", ""))).upper()
     if option_type not in ["CALL", "PUT"]:
@@ -147,7 +164,6 @@ def is_market_open():
 
 def days_to_expiry(expiry_str):
     try:
-        # Try multiple possible date formats
         for fmt in ["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"]:
             try:
                 expiry_date = datetime.datetime.strptime(str(expiry_str)[:19], fmt).date()
@@ -158,6 +174,17 @@ def days_to_expiry(expiry_str):
         return 999
     except:
         return 999
+
+def is_deep_itm(option_type, strike, underlying_price):
+    if not strike or not underlying_price:
+        return False
+    try:
+        strike = float(strike)
+        underlying_price = float(underlying_price)
+        otm_percent = ((underlying_price - strike) / underlying_price) * 100 if option_type == "CALL" else ((strike - underlying_price) / underlying_price) * 100
+        return otm_percent <= -5  # ≤ -5% means deep ITM (negative OTM % on UW)
+    except:
+        return False
 
 @tasks.loop(seconds=30)
 async def auto_alert_scanner():
@@ -201,7 +228,15 @@ async def auto_alert_scanner():
 
         dte = days_to_expiry(meta.get("expiration", ""))
 
-        print(f"    Checking {ticker} | DTE:{dte} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f} | Prem:{premium}")
+        # Get underlying price for deep ITM check
+        underlying_price = safe_float(meta.get("underlying_price", meta.get("close", 0)))
+
+        print(f"    Checking {ticker} | DTE:{dte} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f} | Prem:{premium} | Underlying:{underlying_price}")
+
+        # Skip deep ITM (negative OTM % ≤ -5%)
+        if is_deep_itm(option_type, meta.get("strike_price") or meta.get("strike"), underlying_price):
+            print(f"    → Skipping deep ITM {ticker}")
+            continue
 
         # 0 DTE — ULTRA STRICT
         if dte == 0:
