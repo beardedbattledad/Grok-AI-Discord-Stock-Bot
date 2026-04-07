@@ -109,10 +109,8 @@ def safe_int(value, default=0):
         return default
 
 def clean_ticker(symbol):
-    """Extract just the root ticker from full option symbol"""
     if not symbol:
         return "UNKNOWN"
-    # Remove numbers, P/C, and everything after the root ticker
     match = re.match(r'^([A-Z]+)', str(symbol))
     return match.group(1) if match else str(symbol).split()[0]
 
@@ -197,25 +195,19 @@ async def auto_alert_scanner():
 
         print(f"    Checking {ticker} | DTE:{dte} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f} | Prem:{premium}")
 
-        # 0 DTE — ULTRA STRICT
+        # ==================== 0 DTE — ULTRA STRICT ====================
         if dte == 0:
-            if (premium < 1000000 or 
-                vol <= oi * 5 or 
-                not is_sweep or 
-                max(ask_percent, bid_percent) < 80):
+            if not (premium >= 1000000 and vol >= oi * 5 and is_sweep and max(ask_percent, bid_percent) >= 80):
                 continue
             print(f"    → 0 DTE ULTRA-STRICT PASS for {ticker}")
 
-        # 1-3 DTE — STILL STRICT
+        # ==================== 1-3 DTE — STILL STRICT ====================
         elif dte <= 3:
-            if (premium < 500000 or 
-                vol <= oi * 3 or 
-                not is_sweep or 
-                max(ask_percent, bid_percent) < 70):
+            if not (premium >= 500000 and vol >= oi * 3 and is_sweep and max(ask_percent, bid_percent) >= 70):
                 continue
             print(f"    → Short-dated strict pass for {ticker}")
 
-        # NORMAL RULES (> 3 DTE)
+        # ==================== NORMAL RULES (> 3 DTE) ====================
         else:
             aggressive = is_sweep or (ask_percent > 60) or (bid_percent > 60)
             if not aggressive:
@@ -244,7 +236,7 @@ async def auto_alert_scanner():
         alert = format_short_alert(trade)
         await channel.send(alert)
         alert_count += 1
-        print(f"  ✅ ALERT SENT: {ticker} | Prem:${premium:,} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f}")
+        print(f"  ✅ ALERT SENT: {ticker} | DTE:{dte} | Prem:${premium:,} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f}")
         await asyncio.sleep(1.5)
 
     if alert_count == 0:
