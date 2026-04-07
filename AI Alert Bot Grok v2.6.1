@@ -87,27 +87,6 @@ async def get_custom_alerts():
         print(f"Custom alerts fetch error: {e}")
         return []
 
-async def get_flow_alerts(limit=200, ticker=None):
-    try:
-        headers = {"Authorization": f"Bearer {UW_API_KEY}"}
-        base_url = "https://api.unusualwhales.com"
-        if ticker:
-            url = f"{base_url}/api/stock/{ticker.upper()}/flow-alerts"
-        else:
-            url = f"{base_url}/api/option-trades/flow-alerts"
-        params = {"limit": limit}
-
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(url, headers=headers, params=params)
-            print(f"→ General Flow API Status: {resp.status_code}")
-            data = resp.json() if resp.status_code == 200 else {"error": resp.text}
-            if isinstance(data, dict) and isinstance(data.get("data"), list):
-                return data["data"][:150]
-            return []
-    except Exception as e:
-        print(f"General flow error: {e}")
-        return []
-
 def safe_float(value, default=0.0):
     try:
         return float(value) if value is not None else default
@@ -130,13 +109,17 @@ def format_short_alert(trade):
     meta = trade.get("meta", {}) if isinstance(trade.get("meta"), dict) else {}
     ticker = clean_ticker(trade.get("symbol"))
     expiry = str(meta.get("expiration", trade.get("created_at", "")))[:10]
-    
-    # Robust strike price lookup - try multiple possible keys
+
+    # === ROBUST STRIKE LOOKUP - TRY EVERY POSSIBLE KEY ===
     strike = "N/A"
-    for key in ["strike_price", "strike", "strikeprice", "K"]:
+    strike_keys = ["strike_price", "strike", "strikeprice", "K", "strikePrice", "strike_price"]
+    for key in strike_keys:
         if key in meta:
             strike = safe_int(meta[key], "N/A")
+            print(f"    → Strike found using key '{key}': ${strike}")
             break
+    if strike == "N/A":
+        print(f"    → No strike key found. Available meta keys: {list(meta.keys())}")
 
     option_type = str(meta.get("option_type", meta.get("type", ""))).upper()
     if option_type not in ["CALL", "PUT"]:
@@ -164,9 +147,15 @@ def is_market_open():
 
 def days_to_expiry(expiry_str):
     try:
-        expiry_date = datetime.datetime.strptime(expiry_str[:10], "%Y-%m-%d").date()
-        today = datetime.date.today()
-        return (expiry_date - today).days
+        # Try multiple possible date formats
+        for fmt in ["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"]:
+            try:
+                expiry_date = datetime.datetime.strptime(str(expiry_str)[:19], fmt).date()
+                today = datetime.date.today()
+                return (expiry_date - today).days
+            except:
+                continue
+        return 999
     except:
         return 999
 
@@ -210,9 +199,9 @@ async def auto_alert_scanner():
         if today_move == 0.0:
             today_move = safe_float(meta.get("diff"))
 
-        dte = days_to_expiry(str(meta.get("expiration", "")))
+        dte = days_to_expiry(meta.get("expiration", ""))
 
-        print(f"    Checking {ticker} | DTE:{dte} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f} | Prem:{premium} | Strike keys checked")
+        print(f"    Checking {ticker} | DTE:{dte} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f} | Prem:{premium}")
 
         # 0 DTE — ULTRA STRICT
         if dte == 0:
@@ -255,7 +244,7 @@ async def auto_alert_scanner():
         alert = format_short_alert(trade)
         await channel.send(alert)
         alert_count += 1
-        print(f"  ✅ ALERT SENT: {ticker} | Prem:${premium:,} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f}")
+        print(f"  ✅ ALERT SENT: {ticker} | DTE:{dte} | Prem:${premium:,} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f}")
         await asyncio.sleep(1.5)
 
     if alert_count == 0:
@@ -265,7 +254,7 @@ async def auto_alert_scanner():
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# Conversational mode
+# Conversational mode (unchanged)
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
