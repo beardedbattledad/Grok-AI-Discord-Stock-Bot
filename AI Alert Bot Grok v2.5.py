@@ -20,13 +20,10 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# YOUR EXACT CUSTOM ALERT NAMES
-CUSTOM_ALERT_NAMES = ["AI ETF", "AI Mega Cap", "AI Mid Cap", "AI Small Cap"]
+CUSTOM_ALERT_NAMES = ["AI Mid Cap", "AI Small Cap", "AI ETF", "AI Mega Cap"]  # Update if your exact names differ
 
-# MAJOR INDEX ETFs (relaxed chasing)
 MAJOR_ETFS = {"SPY", "QQQ", "SOXX", "TQQQ", "SPXU", "SQQQ", "SOXS", "SPXS", "IWM", "DIA", "XLK", "XLF"}
 
-# Global map: name → id
 alert_configs = {}
 
 async def load_alert_configs():
@@ -46,12 +43,10 @@ async def load_alert_configs():
                     if name and aid and name in CUSTOM_ALERT_NAMES:
                         alert_configs[name] = aid
                         loaded += 1
-                        print(f"  Loaded alert: {name} (ID: {aid})")
+                        print(f"  Loaded: '{name}' (ID: {aid})")
                 print(f"✅ Loaded {loaded} matching custom alerts")
-            else:
-                print(f"Failed to load configs: {resp.status_code}")
     except Exception as e:
-        print(f"Error loading configs: {e}")
+        print(f"Config load error: {e}")
 
 async def get_custom_alerts():
     if not alert_configs:
@@ -68,57 +63,23 @@ async def get_custom_alerts():
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(f"{base_url}/api/alerts", headers=headers, params=params)
             print(f"→ Custom Alerts API Status: {resp.status_code}")
-            data = resp.json() if resp.status_code == 200 else {"error": resp.text}
-            if isinstance(data, dict) and isinstance(data.get("data"), list):
-                count = len(data["data"])
-                print(f"  Received {count} triggered custom alerts")
-                return data["data"]
-            print("  No data returned from custom alerts")
-            return []
+            if resp.status_code != 200:
+                print(f"  Error body: {resp.text[:300]}")
+                return []
+
+            data = resp.json()
+            trades = data.get("data", []) if isinstance(data, dict) else []
+            print(f"  Received {len(trades)} raw trades from custom alerts")
+
+            # Debug: print first trade structure if any
+            if trades:
+                print(f"  First trade keys: {list(trades[0].keys())}")
+                print(f"  Sample trade: {json.dumps(trades[0], default=str, indent=2)[:800]}...")
+
+            return trades
     except Exception as e:
         print(f"Custom alerts fetch error: {e}")
         return []
-
-async def get_flow_alerts(limit=200, ticker=None):
-    # General broad flow - used ONLY in conversational mode
-    try:
-        headers = {"Authorization": f"Bearer {UW_API_KEY}"}
-        base_url = "https://api.unusualwhales.com"
-        if ticker:
-            url = f"{base_url}/api/stock/{ticker.upper()}/flow-alerts"
-        else:
-            url = f"{base_url}/api/option-trades/flow-alerts"
-        params = {"limit": limit}
-
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(url, headers=headers, params=params)
-            print(f"→ General Flow API Status: {resp.status_code}")
-            data = resp.json() if resp.status_code == 200 else {"error": resp.text}
-            if isinstance(data, dict) and isinstance(data.get("data"), list):
-                return data["data"][:150]
-            return []
-    except Exception as e:
-        print(f"General flow error: {e}")
-        return []
-
-def format_short_alert(trade):
-    ticker = trade.get("ticker", "UNKNOWN")
-    expiry = str(trade.get("expiration", ""))[:10]
-    strike = trade.get("strike_price", "")
-    option_type = "CALL" if str(trade.get("option_type", "")).upper() == "CALL" else "PUT"
-    side = "BULLISH" if option_type == "CALL" else "BEARISH"
-    premium = trade.get("premium", 0)
-    vol = trade.get("volume", 0)
-    oi = trade.get("open_interest", 0)
-    execution = "SWEEP" if trade.get("is_sweep") else "BLOCK"
-
-    return f"🚨 {ticker} {expiry} ${strike} {option_type} | {side} | Prem:${premium:,} | Vol/OI:{vol}/{oi} | {execution}"
-
-def is_market_open():
-    now = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=4)  # ET
-    if now.weekday() >= 5:
-        return False
-    return 9.5 <= (now.hour + now.minute / 60) <= 16.0
 
 # ====================== AUTO ALERT SCANNER (Custom Alerts ONLY - no broad fallback) ======================
 @tasks.loop(seconds=30)
