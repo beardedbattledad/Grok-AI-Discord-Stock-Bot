@@ -153,8 +153,12 @@ async def auto_alert_scanner():
         oi = meta.get("open_interest", 1)
         premium = meta.get("total_premium", 0)
         is_sweep = meta.get("has_sweep") or meta.get("is_sweep", False)
-        
-        side_raw = str(meta.get("execution_side", meta.get("trade_side", meta.get("side", "")))).lower()
+
+        ask_vol = meta.get("ask_volume", 0)
+        bid_vol = meta.get("bid_volume", 0)
+        ask_percent = (ask_vol / vol * 100) if vol > 0 else 0
+        bid_percent = (bid_vol / vol * 100) if vol > 0 else 0
+
         option_type = str(meta.get("option_type", meta.get("type", ""))).upper()
         if option_type not in ["CALL", "PUT"]:
             symbol_str = str(trade.get("symbol", ""))
@@ -162,15 +166,17 @@ async def auto_alert_scanner():
                 option_type = "PUT"
             elif 'C' in symbol_str[-15:]:
                 option_type = "CALL"
+            else:
+                option_type = "UNKNOWN"
 
         today_move = safe_float(meta.get("underlying_change_percent"))
         if today_move == 0.0:
             today_move = safe_float(meta.get("diff"))
 
-        print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Side:{side_raw} | Type:{option_type} | Prem:{premium}")
+        print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f} | Type:{option_type} | Prem:{premium}")
 
-        # Aggressive
-        aggressive = is_sweep or ((option_type == "CALL" and side_raw == "ask") or (option_type == "PUT" and side_raw == "bid"))
+        # Aggressive execution
+        aggressive = is_sweep or (ask_percent > 60) or (bid_percent > 60)
         if not aggressive:
             continue
 
@@ -178,7 +184,7 @@ async def auto_alert_scanner():
         if vol <= oi:
             continue
 
-        # No-chasing (relaxed for now)
+        # No-chasing
         is_major_etf = ticker in MAJOR_ETFS
         if today_move > 5:
             continue
@@ -186,13 +192,20 @@ async def auto_alert_scanner():
             if not is_sweep or vol <= oi * 5 or premium < 200000:
                 continue
 
-        # SIDE WORKAROUND: allow everything for now
-        is_directional = True
+        # Directional using calculated percentages
+        is_directional = False
+        if option_type == "CALL":
+            is_directional = ask_percent > 50   # more volume at ask = bullish
+        else:  # PUT
+            is_directional = bid_percent > 50   # more volume at bid = bullish for puts
+
+        if not is_directional:
+            continue
 
         alert = format_short_alert(trade)
         await channel.send(alert)
         alert_count += 1
-        print(f"  ✅ ALERT SENT: {ticker} | Prem:${premium:,}")
+        print(f"  ✅ ALERT SENT: {ticker} | Prem:${premium:,} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f}")
         await asyncio.sleep(1.5)
 
     if alert_count == 0:
