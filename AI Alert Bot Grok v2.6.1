@@ -110,7 +110,7 @@ def safe_int(value, default=0):
 
 def format_short_alert(trade):
     meta = trade.get("meta", {}) if isinstance(trade.get("meta"), dict) else {}
-    ticker = str(trade.get("symbol", "UNKNOWN")).split()[0]  # Clean ticker only
+    ticker = str(trade.get("symbol", "UNKNOWN")).split()[0]
     expiry = str(meta.get("expiration", trade.get("created_at", "")))[:10]
     strike = meta.get("strike_price", "")
     option_type = str(meta.get("option_type", meta.get("type", ""))).upper()
@@ -162,7 +162,7 @@ async def auto_alert_scanner():
     alert_count = 0
     for trade in triggered[:60]:
         meta = trade.get("meta", {}) if isinstance(trade.get("meta"), dict) else {}
-        ticker = str(trade.get("symbol", "")).upper().split()[0]
+        ticker = str(trade.get("symbol", "")).split()[0]
         vol = safe_int(meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0)))
         oi = safe_int(meta.get("open_interest", 1))
         premium = safe_int(meta.get("total_premium", 0))
@@ -189,13 +189,25 @@ async def auto_alert_scanner():
 
         print(f"    Checking {ticker} | DTE:{dte} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f} | Prem:{premium}")
 
-        # STRICT SHORT-TERM RULES (< 3 DTE)
-        if dte <= 3:
-            if premium < 500000 or vol <= oi * 3 or not is_sweep or max(ask_percent, bid_percent) < 70:
+        # ==================== 0 DTE — ULTRA STRICT ====================
+        if dte == 0:
+            if (premium < 1000000 or 
+                vol <= oi * 5 or 
+                not is_sweep or 
+                max(ask_percent, bid_percent) < 80):
+                continue
+            print(f"    → 0 DTE ULTRA-STRICT PASS for {ticker}")
+
+        # ==================== 1-3 DTE — STILL STRICT ====================
+        elif dte <= 3:
+            if (premium < 500000 or 
+                vol <= oi * 3 or 
+                not is_sweep or 
+                max(ask_percent, bid_percent) < 70):
                 continue
             print(f"    → Short-dated strict pass for {ticker}")
 
-        # NORMAL RULES for longer-dated
+        # ==================== NORMAL RULES (> 3 DTE) ====================
         else:
             aggressive = is_sweep or (ask_percent > 60) or (bid_percent > 60)
             if not aggressive:
@@ -224,7 +236,7 @@ async def auto_alert_scanner():
         alert = format_short_alert(trade)
         await channel.send(alert)
         alert_count += 1
-        print(f"  ✅ ALERT SENT: {ticker} | Prem:${premium:,} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f}")
+        print(f"  ✅ ALERT SENT: {ticker} | DTE:{dte} | Prem:${premium:,} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f}")
         await asyncio.sleep(1.5)
 
     if alert_count == 0:
