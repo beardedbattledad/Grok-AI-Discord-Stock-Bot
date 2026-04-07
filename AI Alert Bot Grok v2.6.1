@@ -102,9 +102,15 @@ def safe_float(value, default=0.0):
     except (ValueError, TypeError):
         return default
 
+def safe_int(value, default=0):
+    try:
+        return int(value) if value is not None else default
+    except (ValueError, TypeError):
+        return default
+
 def format_short_alert(trade):
     meta = trade.get("meta", {}) if isinstance(trade.get("meta"), dict) else {}
-    ticker = trade.get("symbol", "UNKNOWN")
+    ticker = str(trade.get("symbol", "UNKNOWN"))
     expiry = str(meta.get("expiration", trade.get("created_at", "")))[:10]
     strike = meta.get("strike_price", "")
     option_type = str(meta.get("option_type", meta.get("type", ""))).upper()
@@ -117,9 +123,9 @@ def format_short_alert(trade):
         else:
             option_type = "UNKNOWN"
     side = "BULLISH" if option_type == "CALL" else "BEARISH"
-    premium = meta.get("total_premium", 0)
-    vol = meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0))
-    oi = meta.get("open_interest", 1)
+    premium = safe_int(meta.get("total_premium", 0))
+    vol = safe_int(meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0)))
+    oi = safe_int(meta.get("open_interest", 1))
     execution = "SWEEP" if meta.get("has_sweep") or meta.get("is_sweep") else "BLOCK"
 
     return f"🚨 {ticker} {expiry} ${strike} {option_type} | {side} | Prem:${premium:,} | Vol/OI:{vol}/{oi} | {execution}"
@@ -149,13 +155,13 @@ async def auto_alert_scanner():
     for trade in triggered[:60]:
         meta = trade.get("meta", {}) if isinstance(trade.get("meta"), dict) else {}
         ticker = str(trade.get("symbol", "")).upper()
-        vol = meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0))
-        oi = meta.get("open_interest", 1)
-        premium = meta.get("total_premium", 0)
+        vol = safe_int(meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0)))
+        oi = safe_int(meta.get("open_interest", 1))
+        premium = safe_int(meta.get("total_premium", 0))
         is_sweep = meta.get("has_sweep") or meta.get("is_sweep", False)
 
-        ask_vol = meta.get("ask_volume", 0)
-        bid_vol = meta.get("bid_volume", 0)
+        ask_vol = safe_int(meta.get("ask_volume", 0))
+        bid_vol = safe_int(meta.get("bid_volume", 0))
         ask_percent = (ask_vol / vol * 100) if vol > 0 else 0
         bid_percent = (bid_vol / vol * 100) if vol > 0 else 0
 
@@ -166,8 +172,6 @@ async def auto_alert_scanner():
                 option_type = "PUT"
             elif 'C' in symbol_str[-15:]:
                 option_type = "CALL"
-            else:
-                option_type = "UNKNOWN"
 
         today_move = safe_float(meta.get("underlying_change_percent"))
         if today_move == 0.0:
@@ -175,7 +179,7 @@ async def auto_alert_scanner():
 
         print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f} | Type:{option_type} | Prem:{premium}")
 
-        # Aggressive execution
+        # Aggressive
         aggressive = is_sweep or (ask_percent > 60) or (bid_percent > 60)
         if not aggressive:
             continue
@@ -192,12 +196,12 @@ async def auto_alert_scanner():
             if not is_sweep or vol <= oi * 5 or premium < 200000:
                 continue
 
-        # Directional using calculated percentages
+        # Directional using ask/bid percentages
         is_directional = False
         if option_type == "CALL":
-            is_directional = ask_percent > 50   # more volume at ask = bullish
+            is_directional = ask_percent > 50
         else:  # PUT
-            is_directional = bid_percent > 50   # more volume at bid = bullish for puts
+            is_directional = bid_percent > 50
 
         if not is_directional:
             continue
@@ -215,7 +219,7 @@ async def auto_alert_scanner():
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# Conversational mode (unchanged)
+# Conversational mode
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
