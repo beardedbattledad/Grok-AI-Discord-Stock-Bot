@@ -20,13 +20,13 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# CUSTOM ALERT NAMES
+# YOUR CUSTOM ALERT NAMES
 CUSTOM_ALERT_NAMES = ["AI_ETF", "AI_Mega_Cap", "AI_Mid_Cap", "AI_Small_Cap"]
 
 # MAJOR INDEX ETFs (relaxed chasing)
 MAJOR_ETFS = {"SPY", "QQQ", "SOXX", "TQQQ", "SPXU", "SQQQ", "SOXS", "SPXS", "IWM", "DIA", "XLK", "XLF"}
 
-# Global map
+# Global map: name → id
 alert_configs = {}
 
 async def load_alert_configs():
@@ -109,7 +109,7 @@ def is_market_open():
         return False
     return 9.5 <= (now.hour + now.minute / 60) <= 16.0
 
-# ====================== AUTO ALERT SCANNER - UPDATED NO-CHASING RULE ======================
+# ====================== AUTO ALERT SCANNER - YOUR EXACT RULES ======================
 @tasks.loop(seconds=30)
 async def auto_alert_scanner():
     if not is_market_open():
@@ -132,13 +132,13 @@ async def auto_alert_scanner():
         oi = trade.get("open_interest", 1)
         premium = trade.get("premium", 0)
         is_sweep = trade.get("is_sweep", False)
-        side = trade.get("side", "").lower()
+        side = trade.get("side", "").lower()          # "ask" or "bid"
         option_type = str(trade.get("option_type", "")).upper()
         today_move = abs(trade.get("underlying_change_percent", 0))
 
-        print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Prem:${premium:,}")
+        print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Side:{side} | Type:{option_type}")
 
-        # 1. Aggressive execution (sweeps preferred but not required)
+        # 1. Aggressive execution (sweeps preferred but NOT required)
         aggressive = is_sweep or ((option_type == "CALL" and side == "ask") or (option_type == "PUT" and side == "bid"))
         if not aggressive:
             continue
@@ -147,17 +147,19 @@ async def auto_alert_scanner():
         if vol <= oi:
             continue
 
-        # 3. No-chasing rule (updated per your request)
+        # 3. No-chasing (updated per your request)
         is_major_etf = ticker in MAJOR_ETFS
         if today_move > 5:
-            continue  # hard no-chasing above 5%
+            continue  # hard skip above 5%
         elif today_move > 3:
-            # 3-5% move: reduced conviction - needs MUCH stronger signal
-            if not is_sweep or vol <= oi * 5 or premium < 200000:  # higher bar
+            # 3-5% move = reduced conviction → needs MUCH stronger signal
+            if not is_sweep or vol <= oi * 5 or premium < 200000:
                 continue
 
-        # 4. Directional preference
-        is_directional = (option_type == "CALL" and side == "ask") or (option_type == "PUT" and side == "bid")
+        # 4. Directional preference (bullish calls or bearish puts)
+        # Bullish call = call bought at ask
+        # Bearish put = put bought at ask
+        is_directional = (option_type == "CALL" and side == "ask") or (option_type == "PUT" and side == "ask")
         if not is_directional:
             continue
 
@@ -175,7 +177,7 @@ async def auto_alert_scanner():
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# ====================== CONVERSATIONAL MODE (unchanged) ======================
+# ====================== CONVERSATIONAL MODE ======================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
