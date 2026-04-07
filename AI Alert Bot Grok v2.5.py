@@ -21,7 +21,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # YOUR EXACT CUSTOM ALERT NAMES
-CUSTOM_ALERT_NAMES = ["AI_ETF", "AI_Mega_Cap", "AI_Mid_Cap", "AI_Small_Cap"]
+CUSTOM_ALERT_NAMES = ["AI ETF", "AI Mega Cap", "AI Mid Cap", "AI Small Cap"]
 
 # MAJOR INDEX ETFs (relaxed chasing)
 MAJOR_ETFS = {"SPY", "QQQ", "SOXX", "TQQQ", "SPXU", "SQQQ", "SOXS", "SPXS", "IWM", "DIA", "XLK", "XLF"}
