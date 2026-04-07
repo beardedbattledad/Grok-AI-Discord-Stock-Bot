@@ -10,7 +10,7 @@ import httpx
 
 load_dotenv()
 
-# CONFIG
+# ====================== CONFIG ======================
 XAI_API_KEY = os.getenv("XAI_API_KEY")
 UW_API_KEY = os.getenv("UW_API_KEY")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -20,12 +20,15 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-CUSTOM_ALERT_NAMES = ["AI Mid Cap", "AI Small Cap", "AI ETF", "AI Mega Cap"]  # Update if your exact names differ
+# YOUR EXACT CUSTOM ALERT NAMES — update if needed
+CUSTOM_ALERT_NAMES = ["AI Mid Cap", "AI Small Cap", "AI ETF"]
 
+# MAJOR INDEX ETFs (relaxed no-chasing)
 MAJOR_ETFS = {"SPY", "QQQ", "SOXX", "TQQQ", "SPXU", "SQQQ", "SOXS", "SPXS", "IWM", "DIA", "XLK", "XLF"}
 
 alert_configs = {}
 
+# ====================== LOAD CUSTOM ALERT CONFIGS ======================
 async def load_alert_configs():
     global alert_configs
     alert_configs = {}
@@ -45,9 +48,12 @@ async def load_alert_configs():
                         loaded += 1
                         print(f"  Loaded: '{name}' (ID: {aid})")
                 print(f"✅ Loaded {loaded} matching custom alerts")
+            else:
+                print(f"Failed to load configs: {resp.status_code}")
     except Exception as e:
         print(f"Config load error: {e}")
 
+# ====================== GET CUSTOM ALERTS (ONLY THESE) ======================
 async def get_custom_alerts():
     if not alert_configs:
         print("→ No custom alert configs loaded")
@@ -64,24 +70,66 @@ async def get_custom_alerts():
             resp = await client.get(f"{base_url}/api/alerts", headers=headers, params=params)
             print(f"→ Custom Alerts API Status: {resp.status_code}")
             if resp.status_code != 200:
-                print(f"  Error body: {resp.text[:300]}")
+                print(f"  Error: {resp.text[:300]}")
                 return []
 
             data = resp.json()
             trades = data.get("data", []) if isinstance(data, dict) else []
             print(f"  Received {len(trades)} raw trades from custom alerts")
 
-            # Debug: print first trade structure if any
             if trades:
                 print(f"  First trade keys: {list(trades[0].keys())}")
-                print(f"  Sample trade: {json.dumps(trades[0], default=str, indent=2)[:800]}...")
+                print(f"  Sample trade: {json.dumps(trades[0], default=str, indent=2)[:900]}...")
 
             return trades
     except Exception as e:
         print(f"Custom alerts fetch error: {e}")
         return []
 
-# ====================== AUTO ALERT SCANNER (Custom Alerts ONLY - no broad fallback) ======================
+# ====================== GENERAL FLOW (for conversational mode only) ======================
+async def get_flow_alerts(limit=200, ticker=None):
+    try:
+        headers = {"Authorization": f"Bearer {UW_API_KEY}"}
+        base_url = "https://api.unusualwhales.com"
+        if ticker:
+            url = f"{base_url}/api/stock/{ticker.upper()}/flow-alerts"
+        else:
+            url = f"{base_url}/api/option-trades/flow-alerts"
+        params = {"limit": limit}
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            print(f"→ General Flow API Status: {resp.status_code}")
+            data = resp.json() if resp.status_code == 200 else {"error": resp.text}
+            if isinstance(data, dict) and isinstance(data.get("data"), list):
+                return data["data"][:150]
+            return []
+    except Exception as e:
+        print(f"General flow error: {e}")
+        return []
+
+# ====================== HELPER FUNCTIONS ======================
+def format_short_alert(trade):
+    ticker = trade.get("ticker", "UNKNOWN")
+    expiry = str(trade.get("expiration", ""))[:10]
+    strike = trade.get("strike_price", "")
+    option_type = "CALL" if str(trade.get("option_type", "")).upper() == "CALL" else "PUT"
+    side = "BULLISH" if option_type == "CALL" else "BEARISH"
+    premium = trade.get("premium", 0)
+    vol = trade.get("volume", 0)
+    oi = trade.get("open_interest", 0)
+    execution = "SWEEP" if trade.get("is_sweep") else "BLOCK"
+
+    return f"🚨 {ticker} {expiry} ${strike} {option_type} | {side} | Prem:${premium:,} | Vol/OI:{vol}/{oi} | {execution}"
+
+def is_market_open():
+    now = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=4)  # ET
+    if now.weekday() >= 5:
+        return False
+    hour = now.hour + now.minute / 60.0
+    return 9.5 <= hour <= 16.0
+
+# ====================== AUTO ALERT SCANNER (Custom Alerts ONLY) ======================
 @tasks.loop(seconds=30)
 async def auto_alert_scanner():
     if not is_market_open():
@@ -103,13 +151,13 @@ async def auto_alert_scanner():
         oi = trade.get("open_interest", 1)
         premium = trade.get("premium", 0)
         is_sweep = trade.get("is_sweep", False)
-        side = trade.get("side", "").lower()
+        side = str(trade.get("side", "")).lower()
         option_type = str(trade.get("option_type", "")).upper()
         today_move = abs(trade.get("underlying_change_percent", 0))
 
         print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Side:{side} | Type:{option_type}")
 
-        # Aggressive execution (sweeps preferred but not required)
+        # Aggressive execution
         aggressive = is_sweep or ((option_type == "CALL" and side == "ask") or (option_type == "PUT" and side == "bid"))
         if not aggressive:
             continue
@@ -118,7 +166,7 @@ async def auto_alert_scanner():
         if vol <= oi:
             continue
 
-        # No-chasing (loosened as requested)
+        # No-chasing (loosened)
         is_major_etf = ticker in MAJOR_ETFS
         if today_move > 5:
             continue
@@ -131,7 +179,6 @@ async def auto_alert_scanner():
         if not is_directional:
             continue
 
-        # Alert
         alert = format_short_alert(trade)
         await channel.send(alert)
         alert_count += 1
@@ -145,7 +192,7 @@ async def auto_alert_scanner():
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# ====================== CONVERSATIONAL MODE (pulls BOTH general flow + custom alerts) ======================
+# ====================== CONVERSATIONAL MODE (BOTH general + custom) ======================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -198,7 +245,7 @@ async def on_message(message: discord.Message):
                 await send_long_message(message.channel, final_reply or "No strong signals found.")
 
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Error processing message: {e}")
             await message.reply("Sorry, I ran into an error while analyzing.")
 
 # ====================== SEND LONG MESSAGES ======================
