@@ -25,6 +25,7 @@ CUSTOM_ALERT_NAMES = ["AI Mid Cap", "AI Small Cap", "AI ETF", "AI Mega Cap"]
 MAJOR_ETFS = {"SPY", "QQQ", "SOXX", "TQQQ", "SPXU", "SQQQ", "SOXS", "SPXS", "IWM", "DIA", "XLK", "XLF"}
 
 alert_configs = {}
+last_alert_time = None  # Will track the newest timestamp we've seen
 
 async def load_alert_configs():
     global alert_configs
@@ -49,6 +50,7 @@ async def load_alert_configs():
         print(f"Config load error: {e}")
 
 async def get_custom_alerts():
+    global last_alert_time
     if not alert_configs:
         print("→ No custom alert configs loaded")
         return []
@@ -60,6 +62,10 @@ async def get_custom_alerts():
         for cid in config_ids:
             params.setdefault("config_ids[]", []).append(cid)
 
+        # Add time filter to avoid duplicates
+        if last_alert_time:
+            params["newer_than"] = last_alert_time
+
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(f"{base_url}/api/alerts", headers=headers, params=params)
             print(f"→ Custom Alerts API Status: {resp.status_code}")
@@ -69,7 +75,15 @@ async def get_custom_alerts():
 
             data = resp.json()
             trades = data.get("data", []) if isinstance(data, dict) else []
-            print(f"  Received {len(trades)} raw trades from custom alerts")
+            print(f"  Received {len(trades)} NEW trades from custom alerts")
+
+            if trades:
+                # Update last seen time to the newest trade
+                newest_time = trades[0].get("created_at") or trades[0].get("tape_time")
+                if newest_time:
+                    last_alert_time = newest_time
+                    print(f"  Updated last_alert_time to: {last_alert_time}")
+
             return trades
     except Exception as e:
         print(f"Custom alerts fetch error: {e}")
@@ -195,19 +209,19 @@ async def auto_alert_scanner():
 
         print(f"    Checking {ticker} | DTE:{dte} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Ask%:{ask_percent:.1f} | Bid%:{bid_percent:.1f} | Prem:{premium}")
 
-        # ==================== 0 DTE — ULTRA STRICT ====================
+        # 0 DTE — ULTRA STRICT
         if dte == 0:
             if not (premium >= 1000000 and vol >= oi * 5 and is_sweep and max(ask_percent, bid_percent) >= 80):
                 continue
             print(f"    → 0 DTE ULTRA-STRICT PASS for {ticker}")
 
-        # ==================== 1-3 DTE — STILL STRICT ====================
+        # 1-3 DTE — STILL STRICT
         elif dte <= 3:
             if not (premium >= 500000 and vol >= oi * 3 and is_sweep and max(ask_percent, bid_percent) >= 70):
                 continue
             print(f"    → Short-dated strict pass for {ticker}")
 
-        # ==================== NORMAL RULES (> 3 DTE) ====================
+        # NORMAL RULES (> 3 DTE)
         else:
             aggressive = is_sweep or (ask_percent > 60) or (bid_percent > 60)
             if not aggressive:
@@ -246,7 +260,7 @@ async def auto_alert_scanner():
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# Conversational mode (unchanged)
+# Conversational mode
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
