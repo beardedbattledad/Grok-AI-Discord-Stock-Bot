@@ -25,7 +25,7 @@ CUSTOM_ALERT_NAMES = ["AI Mid Cap", "AI Small Cap", "AI ETF", "AI Mega Cap"]
 MAJOR_ETFS = {"SPY", "QQQ", "SOXX", "TQQQ", "SPXU", "SQQQ", "SOXS", "SPXS", "IWM", "DIA", "XLK", "XLF"}
 
 alert_configs = {}
-last_alert_time = None  # Will track the newest timestamp we've seen
+last_alert_time = None
 
 async def load_alert_configs():
     global alert_configs
@@ -62,7 +62,6 @@ async def get_custom_alerts():
         for cid in config_ids:
             params.setdefault("config_ids[]", []).append(cid)
 
-        # Add time filter to avoid duplicates
         if last_alert_time:
             params["newer_than"] = last_alert_time
 
@@ -78,7 +77,6 @@ async def get_custom_alerts():
             print(f"  Received {len(trades)} NEW trades from custom alerts")
 
             if trades:
-                # Update last seen time to the newest trade
                 newest_time = trades[0].get("created_at") or trades[0].get("tape_time")
                 if newest_time:
                     last_alert_time = newest_time
@@ -132,7 +130,7 @@ def format_short_alert(trade):
     meta = trade.get("meta", {}) if isinstance(trade.get("meta"), dict) else {}
     ticker = clean_ticker(trade.get("symbol"))
     expiry = str(meta.get("expiration", trade.get("created_at", "")))[:10]
-    strike = meta.get("strike_price", "")
+    strike = safe_int(meta.get("strike_price"), "N/A")
     option_type = str(meta.get("option_type", meta.get("type", ""))).upper()
     if option_type not in ["CALL", "PUT"]:
         symbol_str = str(trade.get("symbol", ""))
