@@ -20,7 +20,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# CUSTOM FILTERS (use exact names from your Unusual Whales dashboard)
+# CUSTOM FILTERS
 CUSTOM_FILTERS = [
     {"name": "AI_ETF",        "min_premium": 1000000, "interval_seconds": 30},
     {"name": "AI_Mega_Cap",   "min_premium": 500000,  "interval_seconds": 45},
@@ -78,7 +78,7 @@ def is_market_open():
         return False
     return 9.5 <= (now.hour + now.minute / 60) <= 16.0
 
-# ====================== AUTO ALERT SCANNER - YOUR EXACT RULES ======================
+# ====================== AUTO ALERT SCANNER - YOUR EXACT RULES + DEBUG LOGGING ======================
 @tasks.loop(seconds=30)
 async def auto_alert_scanner():
     if not is_market_open():
@@ -107,6 +107,11 @@ async def auto_alert_scanner():
                 is_sweep = trade.get("is_sweep", False)
                 side = trade.get("side", "").lower()
                 option_type = str(trade.get("option_type", "")).upper()
+                today_move = abs(trade.get("underlying_change_percent", 0))
+
+                # Debug log every trade that passes premium
+                if premium >= f["min_premium"]:
+                    print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move}% | Sweep:{is_sweep}")
 
                 # 1. Aggressive execution (sweeps preferred but not required)
                 aggressive = is_sweep or ((option_type == "CALL" and side == "ask") or (option_type == "PUT" and side == "bid"))
@@ -118,7 +123,6 @@ async def auto_alert_scanner():
                     continue
 
                 # 3. No chasing (relaxed for Major ETFs)
-                today_move = abs(trade.get("underlying_change_percent", 0))
                 is_major_etf = ticker in MAJOR_ETFS
                 if is_major_etf:
                     if today_move > 5:
@@ -127,11 +131,11 @@ async def auto_alert_scanner():
                     if today_move > 3:
                         continue
 
-                # 4. Premium tier (already filtered, but double-check)
+                # 4. Premium tier
                 if premium < f["min_premium"]:
                     continue
 
-                # 5. Directional preference (bullish calls or bearish puts preferred)
+                # 5. Directional preference
                 is_directional = (option_type == "CALL" and side == "ask") or (option_type == "PUT" and side == "bid")
                 if not is_directional:
                     continue
@@ -153,7 +157,7 @@ async def auto_alert_scanner():
 
     print("→ === SCAN CYCLE COMPLETED ===\n")
 
-# ====================== CONVERSATIONAL MODE (unchanged) ======================
+# ====================== CONVERSATIONAL MODE ======================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
