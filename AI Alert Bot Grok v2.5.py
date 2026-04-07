@@ -20,7 +20,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# YOUR EXACT CUSTOM ALERT NAMES — update if needed
+# YOUR EXACT CUSTOM ALERT NAMES
 CUSTOM_ALERT_NAMES = ["AI Mid Cap", "AI Small Cap", "AI ETF"]
 
 # MAJOR INDEX ETFs (relaxed no-chasing)
@@ -53,7 +53,7 @@ async def load_alert_configs():
     except Exception as e:
         print(f"Config load error: {e}")
 
-# ====================== GET CUSTOM ALERTS (ONLY THESE) ======================
+# ====================== GET CUSTOM ALERTS ======================
 async def get_custom_alerts():
     if not alert_configs:
         print("→ No custom alert configs loaded")
@@ -79,7 +79,10 @@ async def get_custom_alerts():
 
             if trades:
                 print(f"  First trade keys: {list(trades[0].keys())}")
-                print(f"  Sample trade: {json.dumps(trades[0], default=str, indent=2)[:900]}...")
+                if 'meta' in trades[0]:
+                    meta = trades[0]['meta']
+                    print(f"  Meta keys: {list(meta.keys())}")
+                    print(f"  Sample meta: {json.dumps(meta, default=str, indent=2)[:1200]}...")
 
             return trades
     except Exception as e:
@@ -110,15 +113,16 @@ async def get_flow_alerts(limit=200, ticker=None):
 
 # ====================== HELPER FUNCTIONS ======================
 def format_short_alert(trade):
-    ticker = trade.get("ticker", "UNKNOWN")
-    expiry = str(trade.get("expiration", ""))[:10]
-    strike = trade.get("strike_price", "")
-    option_type = "CALL" if str(trade.get("option_type", "")).upper() == "CALL" else "PUT"
+    meta = trade.get("meta", {}) if isinstance(trade.get("meta"), dict) else {}
+    ticker = trade.get("symbol", "UNKNOWN")
+    expiry = str(meta.get("expiration", trade.get("created_at", "")))[:10]
+    strike = meta.get("strike_price", "")
+    option_type = "CALL" if str(meta.get("option_type", "")).upper() == "CALL" else "PUT"
     side = "BULLISH" if option_type == "CALL" else "BEARISH"
-    premium = trade.get("premium", 0)
-    vol = trade.get("volume", 0)
-    oi = trade.get("open_interest", 0)
-    execution = "SWEEP" if trade.get("is_sweep") else "BLOCK"
+    premium = meta.get("total_premium", 0)
+    vol = meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0))
+    oi = meta.get("open_interest", 1)
+    execution = "SWEEP" if meta.get("has_sweep") or meta.get("is_sweep") else "BLOCK"
 
     return f"🚨 {ticker} {expiry} ${strike} {option_type} | {side} | Prem:${premium:,} | Vol/OI:{vol}/{oi} | {execution}"
 
@@ -146,27 +150,28 @@ async def auto_alert_scanner():
 
     alert_count = 0
     for trade in triggered[:60]:
-        ticker = trade.get("ticker", "").upper()
-        vol = trade.get("volume", 0)
-        oi = trade.get("open_interest", 1)
-        premium = trade.get("premium", 0)
-        is_sweep = trade.get("is_sweep", False)
-        side = str(trade.get("side", "")).lower()
-        option_type = str(trade.get("option_type", "")).upper()
-        today_move = abs(trade.get("underlying_change_percent", 0))
+        meta = trade.get("meta", {}) if isinstance(trade.get("meta"), dict) else {}
+        ticker = str(trade.get("symbol", "")).upper()
+        vol = meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0))
+        oi = meta.get("open_interest", 1)
+        premium = meta.get("total_premium", 0)
+        is_sweep = meta.get("has_sweep") or meta.get("is_sweep", False)
+        side = str(meta.get("side", "")).lower()
+        option_type = str(meta.get("option_type", "")).upper()
+        today_move = abs(meta.get("underlying_change_percent", meta.get("diff", 0)))
 
-        print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Side:{side} | Type:{option_type}")
+        print(f"    Checking {ticker} | Vol:{vol} | OI:{oi} | Move:{today_move:.2f}% | Sweep:{is_sweep} | Side:{side} | Type:{option_type} | Prem:{premium}")
 
-        # Aggressive execution
+        # Aggressive execution (sweeps preferred but not required)
         aggressive = is_sweep or ((option_type == "CALL" and side == "ask") or (option_type == "PUT" and side == "bid"))
         if not aggressive:
             continue
 
-        # New opening
+        # New opening positions
         if vol <= oi:
             continue
 
-        # No-chasing (loosened)
+        # No-chasing (loosened as requested)
         is_major_etf = ticker in MAJOR_ETFS
         if today_move > 5:
             continue
