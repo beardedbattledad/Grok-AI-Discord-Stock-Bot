@@ -22,7 +22,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 CUSTOM_ALERT_NAMES = ["AI Mid Cap", "AI Small Cap", "AI ETF", "AI Mega Cap"]
 
-# Major Index ETFs - treat with extra strictness
+# Major Index ETFs - extra strict
 MAJOR_INDEX_ETFS = {"SPY", "QQQ", "SOXX", "IWM", "DIA", "XLK", "XLF"}
 
 alert_configs = {}
@@ -137,7 +137,7 @@ def parse_option_symbol(symbol):
     match = re.match(r'^([A-Z]+)(\d{6})([CP])(\d+)', symbol)
     if match:
         ticker = match.group(1)
-        date_str = match.group(2)  # YYMMDD
+        date_str = match.group(2)
         opt_type = "CALL" if match.group(3) == "C" else "PUT"
         strike = int(match.group(4)) / 1000
         try:
@@ -181,7 +181,7 @@ def is_market_open():
     hour = now.hour + now.minute / 60.0
     return 9.5 <= hour <= 16.0
 
-# ====================== AI-DRIVEN SCANNER (STRICTER ON ETFs) ======================
+# ====================== AI-DRIVEN SCANNER (TIGHTER ETFs + PRECISE NO-CHASING) ======================
 @tasks.loop(seconds=45)
 async def auto_alert_scanner():
     if not is_market_open():
@@ -213,22 +213,25 @@ async def auto_alert_scanner():
         context = json.dumps(triggered, default=str, indent=2)
 
         system_prompt = """You are a sharp, conservative options flow analyst. 
-Be very selective — only alert on truly high-conviction setups.
+Be extremely selective — only alert on truly exceptional high-conviction setups.
 
-Strict ETF Rules:
-- Major Index ETFs (SPY, QQQ, SOXX, IWM, DIA, XLK, XLF, TQQQ, SQQQ, etc.): Require MUCH higher bar — significantly larger premium, stronger volume spike vs OI, clear directional imbalance, and exceptional conviction. These are often hedging or macro plays.
-- Leveraged/Inverse ETFs: Treat as mid-cap but still stricter than regular stocks.
-- Regular stocks (non-ETFs): Normal high-conviction bar.
+STRICT NO-CHASING RULE:
+- If underlying is up > 3% today, DO NOT chase bullish flow (calls). The larger the move (5%, 10%, 25%), the stricter this rule becomes.
+- If underlying is down > 3% today, DO NOT chase bearish flow (puts). The larger the move, the stricter.
+- Only allow exceptions for highly exceptional flow (massive premium, huge volume spike, very strong directional imbalance).
 
-General Rules:
+VERY STRICT ETF RULES:
+- Major Index ETFs (SPY, QQQ, SOXX, IWM, DIA, XLK, XLF, TQQQ, SQQQ, etc.): Require EXTREMELY high bar. Only alert if everything is exceptional. Default to NO alert on ETFs.
+- Leveraged/Inverse ETFs: Higher bar than regular stocks.
+
+Other Rules:
 - Ignore deep ITM (OTM% ≤ -5%)
-- 0 DTE: extremely strict — only exceptional cases with very high premium and strong signals
-- Larger absolute volume AND higher vol/OI ratio = higher conviction — prioritize big volume trades
+- 0 DTE: extremely strict
+- Larger absolute volume AND higher vol/OI ratio = higher conviction
 - Prefer new opening positions (volume clearly > OI)
 - Prefer directional conviction (strong ask% for calls, strong bid% for puts)
-- Consider underlying stock's today's move % (avoid chasing)
 
-Only output trades you genuinely believe are good plays. If none meet the high bar (especially for ETFs), output nothing.
+Only output trades you genuinely believe are good plays. Default to silence on chasing or ETF flow unless truly exceptional. If nothing qualifies, output nothing.
 
 Output format:
 🚨 TICKER EXPIRY $STRIKE TYPE | SIDE | Prem:$PREMIUM | Vol/OI:VOL/OI | EXECUTION"""
@@ -241,7 +244,7 @@ Output format:
                     "model": "grok-4-fast-reasoning",
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Here are the latest custom alert trades (with underlying move % added):\n{context}\n\nWhich ones are high-conviction setups? Be extra strict on ETFs. Output only the good ones in the exact short format above, or nothing."}
+                        {"role": "user", "content": f"Here are the latest custom alert trades (with underlying move % added):\n{context}\n\nApply the strict no-chasing rule and be very strict on ETFs. Output only the good ones in the exact short format above, or nothing."}
                     ],
                     "temperature": 0.25,
                     "max_tokens": 1500
@@ -262,7 +265,7 @@ Output format:
                     print(f"  ✅ AI ALERT SENT: {alert}")
                     await asyncio.sleep(1.0)
             else:
-                print("  AI decided no high-conviction alerts this cycle (extra strict on ETFs)")
+                print("  AI decided no high-conviction alerts this cycle (strict no-chasing + ETFs)")
 
     except Exception as e:
         print(f"  AI decision error: {e}")
@@ -298,7 +301,6 @@ async def on_message(message: discord.Message):
             general_flow = await get_flow_alerts(limit=200, ticker=ticker)
             custom_alerts = await get_custom_alerts()
 
-            # Enrich with underlying move
             for trade in custom_alerts:
                 meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
                 underlying_ticker = meta.get("underlying_symbol") or clean_ticker(trade.get("symbol", ""))
@@ -309,14 +311,13 @@ async def on_message(message: discord.Message):
             context = f"General recent flow:\n{json.dumps(general_flow, default=str, indent=2)}\n\nTriggered custom alerts (with underlying move %):\n{json.dumps(custom_alerts, default=str, indent=2)}"
 
             system_prompt = """You are a balanced, evidence-based smart-money options flow analyst.
-Use the provided data to give truthful, contextual analysis.
 
 Guardrails:
 - Larger absolute trade volume AND higher vol/OI ratio generally indicate higher conviction
 - Sweeps and aggressive execution add conviction
 - Always consider the overall market direction and recent underlying price move %
 - For ETFs (especially major index like SPY/QQQ): apply extra scrutiny — they are often hedging or macro flows
-- Be willing to say when flow contradicts price action or looks like chasing
+- No-chasing: if underlying is up >3% today, be skeptical of bullish flow; if down >3%, be skeptical of bearish flow. The larger the move, the more skeptical.
 
 Be objective. Highlight both bullish and bearish signals with their relative conviction levels. Cite specific numbers."""
 
