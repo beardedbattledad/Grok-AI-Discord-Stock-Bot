@@ -85,6 +85,27 @@ async def get_custom_alerts():
         print(f"Custom alerts fetch error: {e}")
         return []
 
+async def get_flow_alerts(limit=200, ticker=None):
+    try:
+        headers = {"Authorization": f"Bearer {UW_API_KEY}"}
+        base_url = "https://api.unusualwhales.com"
+        if ticker:
+            url = f"{base_url}/api/stock/{ticker.upper()}/flow-alerts"
+        else:
+            url = f"{base_url}/api/option-trades/flow-alerts"
+        params = {"limit": limit}
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            print(f"→ General Flow API Status: {resp.status_code}")
+            data = resp.json() if resp.status_code == 200 else {"error": resp.text}
+            if isinstance(data, dict) and isinstance(data.get("data"), list):
+                return data["data"][:150]
+            return []
+    except Exception as e:
+        print(f"General flow error: {e}")
+        return []
+
 def clean_ticker(symbol):
     if not symbol:
         return "UNKNOWN"
@@ -113,7 +134,15 @@ def format_short_alert(trade):
 
     return f"🚨 {ticker} {expiry} ${strike} {option_type} | {side} | Prem:${premium:,} | Vol/OI:{vol}/{oi} | {execution}"
 
-@tasks.loop(seconds=45)  # slightly slower to give AI time
+def is_market_open():
+    now = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=4)
+    if now.weekday() >= 5:
+        return False
+    hour = now.hour + now.minute / 60.0
+    return 9.5 <= hour <= 16.0
+
+# ====================== AI-DRIVEN SCANNER ======================
+@tasks.loop(seconds=45)
 async def auto_alert_scanner():
     if not is_market_open():
         print("→ Scanner: Market closed")
@@ -132,27 +161,27 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # Feed to Grok AI for intelligent filtering
+    # Feed to Grok for intelligent decision making
     try:
         context = json.dumps(triggered, default=str, indent=2)
-        system_prompt = """You are a sharp options flow analyst. 
-Use these strict rules to decide which trades are worth alerting on:
 
-- Ignore anything deep ITM (OTM% ≤ -5%)
-- 0 DTE: extremely strict (high premium, strong volume spike, sweep preferred, strong ask/bid imbalance)
-- 1-3 DTE: still strict but slightly more lenient
+        system_prompt = """You are a sharp, conservative options flow analyst. 
+Decide which trades are truly high-conviction setups worth alerting on. Be selective.
+
+Rules to follow:
+- Ignore deep ITM trades (OTM% ≤ -5%)
+- 0 DTE trades: extremely strict — only alert on exceptional cases with very high premium, strong volume spike, and clear directional conviction
+- 1-3 DTE trades: still strict, require strong signals
 - Sweeps are preferred but not required
-- Prefer new opening positions (volume > OI)
-- The larger the volume the higher conviction is
-- Prefer directional conviction (high ask% for calls, high bid% for puts)
-- Use ask/bid volume percentages to judge conviction
-- Only alert high-conviction setups
+- Prefer new opening positions (volume clearly > open interest)
+- Larger trade volume (both absolute volume and vol/OI ratio) indicates higher conviction — prioritize significantly larger volume trades over smaller ones in the same batch
+- Prefer directional conviction shown by ask/bid volume imbalance (high ask% for calls = bullish, high bid% for puts = bearish)
 
-Output ONLY the trades you believe are good in this exact short format. Do not add extra text:
+Only output trades you genuinely believe are good plays. 
+If nothing meets high-conviction criteria, output nothing.
 
-🚨 TICKER EXPIRY $STRIKE TYPE | SIDE | Prem:$PREMIUM | Vol/OI:VOL/OI | EXECUTION
-
-If nothing is worth alerting, output nothing."""
+Output format for each alert (exactly like this, one per line):
+🚨 TICKER EXPIRY $STRIKE TYPE | SIDE | Prem:$PREMIUM | Vol/OI:VOL/OI | EXECUTION"""
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
@@ -162,10 +191,10 @@ If nothing is worth alerting, output nothing."""
                     "model": "grok-4-fast-reasoning",
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Here are the latest custom alert trades:\n{context}\n\nWhich ones are high-conviction? Output only the good ones in the exact format above."}
+                        {"role": "user", "content": f"Here are the latest custom alert trades from my filters:\n{context}\n\nWhich ones are high-conviction setups? Output only the good ones in the exact short format above, or nothing if none qualify."}
                     ],
-                    "temperature": 0.3,
-                    "max_tokens": 2000
+                    "temperature": 0.25,
+                    "max_tokens": 1500
                 }
             )
 
@@ -176,8 +205,7 @@ If nothing is worth alerting, output nothing."""
             data = resp.json()
             ai_reply = data["choices"][0]["message"]["content"].strip()
 
-            if ai_reply and ai_reply != "nothing" and len(ai_reply) > 10:
-                # Split into individual alerts and send
+            if ai_reply and len(ai_reply) > 10 and "nothing" not in ai_reply.lower():
                 alerts = [line.strip() for line in ai_reply.split('\n') if line.strip().startswith("🚨")]
                 for alert in alerts:
                     await channel.send(alert)
@@ -191,14 +219,7 @@ If nothing is worth alerting, output nothing."""
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-def is_market_open():
-    now = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=4)
-    if now.weekday() >= 5:
-        return False
-    hour = now.hour + now.minute / 60.0
-    return 9.5 <= hour <= 16.0
-
-# Conversational mode (kept as-is — you said it works splendidly)
+# Conversational mode remains unchanged (you said it works well)
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
