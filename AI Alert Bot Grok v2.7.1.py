@@ -201,18 +201,18 @@ Other Rules:
 - Prefer new opening positions
 - Prefer directional conviction
 
-For each alert you choose, assign Conviction: High / Medium / Exceptional and add a very short 1-line explanation (possible hedging, institutional positioning, insider knowledge, quick trade or longer hold).
+For each alert you choose, assign Conviction: High / Medium / Exceptional and add a very short explanation stating justification and if possible hedging, institutional positioning, insider knowledge, quick trade or longer hold.
 
 Output exactly in this format (one alert per block):
 
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+(~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 🚨🚨🚨
 SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
 
 Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | EXEC_SIDE XX%
 
 Short explanation here
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~)
 
 If nothing qualifies, output nothing."""
 
