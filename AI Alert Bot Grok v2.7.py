@@ -141,7 +141,7 @@ def is_market_open():
     hour = now.hour + now.minute / 60.0
     return 9.5 <= hour <= 16.0
 
-# ====================== AI-DRIVEN SCANNER ======================
+# ====================== AI-DRIVEN SCANNER (unchanged) ======================
 @tasks.loop(seconds=45)
 async def auto_alert_scanner():
     if not is_market_open():
@@ -161,26 +161,24 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # Feed to Grok for intelligent decision making
     try:
         context = json.dumps(triggered, default=str, indent=2)
 
         system_prompt = """You are a sharp, conservative options flow analyst. 
 Decide which trades are truly high-conviction setups worth alerting on. Be selective.
 
-Rules to follow:
+Rules to follow (guardrails):
 - Ignore deep ITM trades (OTM% ≤ -5%)
-- 0 DTE trades: extremely strict — only alert on exceptional cases with very high premium, strong volume spike, and clear directional conviction
-- 1-3 DTE trades: still strict, require strong signals
+- 0 DTE: extremely strict — only alert on exceptional cases
+- 1-3 DTE: still strict
 - Sweeps are preferred but not required
 - Prefer new opening positions (volume clearly > open interest)
-- Larger trade volume (both absolute volume and vol/OI ratio) indicates higher conviction — prioritize significantly larger volume trades over smaller ones in the same batch
-- Prefer directional conviction shown by ask/bid volume imbalance (high ask% for calls = bullish, high bid% for puts = bearish)
+- Larger trade volume (absolute volume AND vol/OI ratio) indicates higher conviction — prioritize significantly larger volume trades over smaller ones in the same batch
+- Prefer directional conviction shown by ask/bid volume imbalance
 
-Only output trades you genuinely believe are good plays. 
-If nothing meets high-conviction criteria, output nothing.
+Only output trades you genuinely believe are good plays. If none, output nothing.
 
-Output format for each alert (exactly like this, one per line):
+Output format:
 🚨 TICKER EXPIRY $STRIKE TYPE | SIDE | Prem:$PREMIUM | Vol/OI:VOL/OI | EXECUTION"""
 
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -219,7 +217,7 @@ Output format for each alert (exactly like this, one per line):
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# Conversational mode remains unchanged (you said it works well)
+# ====================== IMPROVED CONVERSATIONAL MODE ======================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -249,17 +247,35 @@ async def on_message(message: discord.Message):
             custom_alerts = await get_custom_alerts()
 
             context = f"General recent flow:\n{json.dumps(general_flow, default=str, indent=2)}\n\nTriggered custom alerts:\n{json.dumps(custom_alerts, default=str, indent=2)}"
-            full_query = f"{query}\n\n{context}\n\nProvide a concise, evidence-based analysis using both datasets. Highlight only high-conviction setups with specific numbers."
 
-            async with httpx.AsyncClient(timeout=40.0) as client:
+            # === IMPROVED PROMPT WITH YOUR NEW RULE + GUARDRAILS ===
+            system_prompt = """You are a balanced, evidence-based smart-money options flow analyst.
+Use the provided data to give truthful, contextual analysis.
+
+Guardrails (use as strong guidance, not absolute rules):
+- Larger absolute trade volume AND higher vol/OI ratio generally indicate higher conviction
+- Sweeps and aggressive execution (ask for calls, bid for puts) add conviction
+- Always consider the overall market direction and recent underlying price move
+- Large put flow during a strong rally is often hedging/protection rather than pure bearish conviction
+- Large call flow during a selloff is often short covering or hedging
+- Be willing to say when flow contradicts price action or looks like chasing
+
+Be objective. Highlight both bullish and bearish signals with their relative conviction levels. Cite specific numbers (premium, volume, vol/OI, sweeps, etc.)."""
+
+            full_query = f"{query}\n\n{context}\n\nProvide a concise, evidence-based analysis. Highlight only high-conviction setups with specific numbers."
+
+            async with httpx.AsyncClient(timeout=50.0) as client:
                 resp = await client.post(
                     "https://api.x.ai/v1/chat/completions",
                     headers={"Authorization": f"Bearer {XAI_API_KEY}", "Content-Type": "application/json"},
                     json={
                         "model": "grok-4-fast-reasoning",
-                        "messages": [{"role": "user", "content": full_query}],
-                        "temperature": 0.4,
-                        "max_tokens": 1200
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": full_query}
+                        ],
+                        "temperature": 0.35,
+                        "max_tokens": 1400
                     }
                 )
 
