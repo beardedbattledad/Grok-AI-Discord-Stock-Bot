@@ -27,7 +27,7 @@ MAJOR_INDEX_ETFS = {"SPY", "QQQ", "SOXX", "IWM", "DIA", "XLK", "XLF"}
 alert_configs = {}
 last_alert_time = None
 underlying_move_cache = {}
-seen_alert_ids = set()  # Prevents duplicate alerts
+seen_alert_ids = set()
 
 async def load_alert_configs():
     global alert_configs
@@ -76,7 +76,6 @@ async def get_underlying_move(ticker: str) -> float:
 async def get_custom_alerts():
     global last_alert_time
     if not alert_configs:
-        print("→ No custom alert configs loaded")
         return []
     try:
         headers = {"Authorization": f"Bearer {UW_API_KEY}"}
@@ -91,19 +90,15 @@ async def get_custom_alerts():
 
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(f"{base_url}/api/alerts", headers=headers, params=params)
-            print(f"→ Custom Alerts API Status: {resp.status_code}")
             if resp.status_code != 200:
                 return []
 
             data = resp.json()
             trades = data.get("data", []) if isinstance(data, dict) else []
-            print(f"  Received {len(trades)} NEW trades from custom alerts")
-
             if trades:
                 newest_time = trades[0].get("created_at") or trades[0].get("tape_time")
                 if newest_time:
                     last_alert_time = newest_time
-
             return trades
     except Exception as e:
         print(f"Custom alerts fetch error: {e}")
@@ -114,12 +109,12 @@ def parse_option_symbol(symbol):
     match = re.match(r'^([A-Z]+)(\d{6})([CP])(\d+)', symbol)
     if match:
         ticker = match.group(1)
-        date_str = match.group(2)  # YYMMDD
+        date_str = match.group(2)
         opt_type = "CALL" if match.group(3) == "C" else "PUT"
         strike = int(match.group(4)) / 1000
         try:
             expiry_date = datetime.datetime.strptime(date_str, "%y%m%d").date()
-            expiry = expiry_date.strftime("%m/%d/%y")  # Consistent MM/DD/YY
+            expiry = expiry_date.strftime("%m/%d/%y")
         except:
             expiry = "UNKNOWN"
         return ticker, expiry, strike, opt_type
@@ -134,16 +129,36 @@ def format_short_alert(trade):
     ticker, expiry, strike, option_type = parse_option_symbol(symbol)
     if not ticker:
         ticker = clean_ticker(symbol)
+
     side = "BULLISH" if option_type == "CALL" else "BEARISH"
     
     meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
     
-    premium = meta.get("total_premium", 0)
-    vol = meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0))
-    oi = meta.get("open_interest", 1)
-    execution = "SWEEP" if meta.get("has_sweep") or meta.get("is_sweep") else "BLOCK"
+    total_premium = meta.get("total_premium", 0)
+    volume = meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0))
+    avg_fill = meta.get("avg_fill", meta.get("average_fill", 0))
+    open_interest = meta.get("open_interest", 1)
+    vol_oi_ratio = meta.get("vol_oi_ratio", round(volume / open_interest, 2) if open_interest > 0 else 0)
+    has_sweep = meta.get("has_sweep") or meta.get("is_sweep") or False
+    execution = "SWEEP" if has_sweep else "BLOCK"
+    
+    # Execution side & %
+    ask_vol = meta.get("ask_volume", 0)
+    bid_vol = meta.get("bid_volume", 0)
+    total_vol = volume if volume > 0 else 1
+    ask_percent = round((ask_vol / total_vol) * 100, 1)
+    bid_percent = round((bid_vol / total_vol) * 100, 1)
+    execution_side = f"{ask_percent}% ASK" if ask_percent > bid_percent else f"{bid_percent}% BID"
 
-    return f"🚨 {ticker} {expiry} ${strike} {option_type} | {side} | Prem:${premium:,} | Vol/OI:{vol}/{oi} | {execution}"
+    conviction = "Exceptional" if (volume > 5000 and total_premium > 2000000) else "High" if (volume > 1000 and total_premium > 500000) else "Medium"
+
+    alert = f"🚨 {ticker} ${strike} {expiry} {option_type} | {side} | Conviction: {conviction}\n"
+    alert += f"Prem: ${total_premium:,} | Vol: {volume} | Avg Fill: ${avg_fill} | OI: {open_interest} | Vol/OI: {vol_oi_ratio} | {execution} | {execution_side}\n"
+    
+    # Short explanation (AI will fill this)
+    alert += "(Short explanation if AI wants to give it)"
+
+    return alert
 
 def is_market_open():
     now = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=4)
@@ -156,7 +171,6 @@ def is_market_open():
 @tasks.loop(seconds=45)
 async def auto_alert_scanner():
     if not is_market_open():
-        print("→ Scanner: Market closed")
         return
 
     channel = bot.get_channel(ALERT_CHANNEL_ID)
@@ -171,7 +185,7 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # Enrich with underlying move %
+    # Enrich with underlying move
     for trade in triggered:
         meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
         underlying_ticker = meta.get("underlying_symbol") or clean_ticker(trade.get("symbol", ""))
@@ -182,26 +196,22 @@ async def auto_alert_scanner():
     try:
         context = json.dumps(triggered, default=str, indent=2)
 
-        system_prompt = """You are a sharp, conservative options flow analyst. 
-Be extremely selective.
+        system_prompt = """You are a sharp, conservative options flow analyst.
 
-STRICT NO-CHASING RULE:
-- If underlying is up > 3% today, DO NOT chase bullish flow (calls). The larger the move (5%+, 10%+, 25%+), the stricter.
-- If underlying is down > 3% today, DO NOT chase bearish flow (puts). The larger the move, the stricter.
-- Only allow exceptions for highly exceptional flow.
+STRICT RULES:
+- No-chasing: If underlying up >3%, do not chase bullish (calls). If down >3%, do not chase bearish (puts). Larger moves = stricter.
+- ETFs: extremely strict, default to no alert.
+- Only alert exceptional setups.
 
-VERY STRICT ETF RULES:
-- Major Index ETFs (SPY, QQQ, SOXX, IWM, DIA, XLK, XLF, TQQQ, SQQQ, etc.): Require EXTREMELY high bar. Default to NO alert.
+For each alert you choose to output, end with a short 1-sentence explanation: why it was alerted, possible insider/hedge fund positioning, hedging, or quick trade vs longer hold.
 
-Other Rules:
-- Ignore deep ITM (OTM% ≤ -5%)
-- 0 DTE: extremely strict
-- Larger volume + higher vol/OI = higher conviction
-- Prefer new opening positions
-- Prefer directional conviction
+Output exactly in this format (one alert per block, with blank line between):
 
-Output format (exactly):
-🚨 TICKER MM/DD/YY $STRIKE TYPE | SIDE | Prem:$PREMIUM | Vol/OI:VOL/OI | EXECUTION | Conviction: High/Medium/Exceptional"""
+🚨 SYMBOL $STRIKE EXPIRATION PUT/CALL | BULLISH/BEARISH | Conviction: High/Medium/Exceptional
+Prem: $TOTAL_PREMIUM | Vol: VOLUME | Avg Fill: $AVG_FILL | OI: OPEN_INTEREST | Vol/OI: RATIO | SWEEP/BLOCK | EXECUTION_SIDE %
+(Short explanation here)
+
+If no alerts qualify, output nothing."""
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
@@ -211,10 +221,10 @@ Output format (exactly):
                     "model": "grok-4-fast-reasoning",
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Here are the latest custom alert trades (with underlying move % added):\n{context}\n\nApply strict no-chasing and ETF rules. Output only the good ones in the exact format above, or nothing."}
+                        {"role": "user", "content": f"Here are the latest custom alert trades (with underlying move % added):\n{context}\n\nOutput only qualifying alerts in the exact format above, or nothing."}
                     ],
                     "temperature": 0.25,
-                    "max_tokens": 1500
+                    "max_tokens": 2000
                 }
             )
 
@@ -225,13 +235,11 @@ Output format (exactly):
             ai_reply = data["choices"][0]["message"]["content"].strip()
 
             if ai_reply and len(ai_reply) > 10 and "nothing" not in ai_reply.lower():
-                alerts = [line.strip() for line in ai_reply.split('\n') if line.strip().startswith("🚨")]
+                # Split by blank lines for clean separation
+                alerts = [block.strip() for block in ai_reply.split('\n\n') if block.strip() and block.strip().startswith("🚨")]
                 for alert in alerts:
-                    # Extra spacing between alerts
                     await channel.send(alert)
-                    await channel.send(" ")  # blank line for readability
-                    print(f"  ✅ AI ALERT SENT: {alert}")
-                    await asyncio.sleep(1.2)
+                    await asyncio.sleep(1.0)
             else:
                 print("  AI decided no high-conviction alerts this cycle")
 
@@ -240,7 +248,7 @@ Output format (exactly):
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# ====================== CONVERSATIONAL MODE ======================
+# Conversational mode (kept clean)
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
