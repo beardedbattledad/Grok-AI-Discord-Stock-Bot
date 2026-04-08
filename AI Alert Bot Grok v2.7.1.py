@@ -27,7 +27,6 @@ MAJOR_INDEX_ETFS = {"SPY", "QQQ", "SOXX", "IWM", "DIA", "XLK", "XLF"}
 alert_configs = {}
 last_alert_time = None
 underlying_move_cache = {}
-seen_alert_ids = set()
 
 async def load_alert_configs():
     global alert_configs
@@ -89,6 +88,7 @@ async def get_custom_alerts():
 
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(f"{base_url}/api/alerts", headers=headers, params=params)
+            print(f"→ Custom Alerts API Status: {resp.status_code}")
             if resp.status_code != 200:
                 return []
 
@@ -101,6 +101,27 @@ async def get_custom_alerts():
             return trades
     except Exception as e:
         print(f"Custom alerts fetch error: {e}")
+        return []
+
+async def get_flow_alerts(limit=200, ticker=None):
+    try:
+        headers = {"Authorization": f"Bearer {UW_API_KEY}"}
+        base_url = "https://api.unusualwhales.com"
+        if ticker:
+            url = f"{base_url}/api/stock/{ticker.upper()}/flow-alerts"
+        else:
+            url = f"{base_url}/api/option-trades/flow-alerts"
+        params = {"limit": limit}
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            print(f"→ General Flow API Status: {resp.status_code}")
+            data = resp.json() if resp.status_code == 200 else {"error": resp.text}
+            if isinstance(data, dict) and isinstance(data.get("data"), list):
+                return data["data"][:150]
+            return []
+    except Exception as e:
+        print(f"General flow error: {e}")
         return []
 
 def parse_option_symbol(symbol):
@@ -143,10 +164,10 @@ def format_short_alert(trade, conviction="Medium", explanation=""):
 
     line1 = f"🚨🚨🚨 {ticker} ${strike} {expiry} {option_type} | {side} | Conviction: {conviction}"
     line2 = f"Prem:${premium:,} | Vol:{vol} | Avg Fill:${avg_fill} | OI:{oi} | Vol/OI:{vol_oi} | {sweep} | {exec_side} {exec_pct}"
-    
+
     full_alert = f"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n{line1}\n{line2}"
-    if explanation:
-        full_alert += f"\n→ {explanation}"
+    if explanation and explanation.strip():
+        full_alert += f"\n→ {explanation.strip()}"
     full_alert += "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
 
     return full_alert
@@ -201,18 +222,15 @@ Other Rules:
 - Prefer new opening positions
 - Prefer directional conviction
 
-For each alert you choose, assign Conviction: High / Medium / Exceptional and add a very short explanation stating justification and if possible hedging, institutional positioning, insider knowledge, quick trade or longer hold.
+For each alert you choose, assign Conviction: High / Medium / Exceptional and add a very short 1-line explanation (possible hedging, institutional positioning, insider knowledge, quick trade or longer hold).
 
 Output exactly in this format (one alert per block):
 
-(~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-🚨🚨🚨
-SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
-
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+🚨🚨🚨 SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
 Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | EXEC_SIDE XX%
-
-Short explanation here
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~)
+→ Short explanation here
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 If nothing qualifies, output nothing."""
 
@@ -254,7 +272,7 @@ If nothing qualifies, output nothing."""
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# Conversational mode (kept simple)
+# ====================== CONVERSATIONAL MODE ======================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
