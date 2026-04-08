@@ -24,6 +24,7 @@ CUSTOM_ALERT_NAMES = ["AI Mid Cap", "AI Small Cap", "AI ETF", "AI Mega Cap"]
 
 alert_configs = {}
 last_alert_time = None
+underlying_move_cache = {}  # ticker -> (move_percent, timestamp)
 
 async def load_alert_configs():
     global alert_configs
@@ -46,6 +47,29 @@ async def load_alert_configs():
                 print(f"✅ Loaded {loaded} matching custom alerts")
     except Exception as e:
         print(f"Config load error: {e}")
+
+async def get_underlying_move(ticker: str) -> float:
+    """Fetch today's % change for underlying (cached)"""
+    ticker = ticker.upper()
+    now = datetime.datetime.now(datetime.UTC)
+    if ticker in underlying_move_cache:
+        move, ts = underlying_move_cache[ticker]
+        if (now - ts).total_seconds() < 60:
+            return move
+
+    try:
+        headers = {"Authorization": f"Bearer {UW_API_KEY}"}
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(f"https://api.unusualwhales.com/api/stock/{ticker}", headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                move = data.get("change_percent") or data.get("today_change_percent") or data.get("diff") or 0.0
+                underlying_move_cache[ticker] = (float(move), now)
+                print(f"  Fetched move for {ticker}: {move:.2f}%")
+                return float(move)
+    except Exception as e:
+        print(f"  Underlying move fetch failed for {ticker}: {e}")
+    return 0.0
 
 async def get_custom_alerts():
     global last_alert_time
@@ -106,27 +130,42 @@ async def get_flow_alerts(limit=200, ticker=None):
         print(f"General flow error: {e}")
         return []
 
+def parse_option_symbol(symbol):
+    symbol = str(symbol).strip()
+    match = re.match(r'^([A-Z]+)(\d{6})([CP])(\d+)', symbol)
+    if match:
+        ticker = match.group(1)
+        date_str = match.group(2)  # YYMMDD
+        opt_type = "CALL" if match.group(3) == "C" else "PUT"
+        strike = int(match.group(4)) / 1000
+        try:
+            expiry = datetime.datetime.strptime(date_str, "%y%m%d").strftime("%Y-%m-%d")
+        except:
+            expiry = "UNKNOWN"
+        return ticker, expiry, strike, opt_type
+    return None, None, None, None
+
+def days_to_expiry(expiry_str):
+    try:
+        expiry_date = datetime.datetime.strptime(expiry_str, "%Y-%m-%d").date()
+        return (expiry_date - datetime.date.today()).days
+    except:
+        return 999
+
 def clean_ticker(symbol):
-    if not symbol:
-        return "UNKNOWN"
-    match = re.match(r'^([A-Z]+)', str(symbol))
-    return match.group(1) if match else str(symbol).split()[0]
+    parsed = parse_option_symbol(symbol)
+    return parsed[0] if parsed[0] else "UNKNOWN"
 
 def format_short_alert(trade):
-    meta = trade.get("meta", {}) if isinstance(trade.get("meta"), dict) else {}
-    ticker = clean_ticker(trade.get("symbol"))
-    expiry = str(meta.get("expiration", trade.get("created_at", "")))[:10]
-    strike = meta.get("strike_price", meta.get("strike", "N/A"))
-    option_type = str(meta.get("option_type", meta.get("type", ""))).upper()
-    if option_type not in ["CALL", "PUT"]:
-        symbol_str = str(trade.get("symbol", ""))
-        if 'P' in symbol_str[-15:]:
-            option_type = "PUT"
-        elif 'C' in symbol_str[-15:]:
-            option_type = "CALL"
-        else:
-            option_type = "UNKNOWN"
+    symbol = trade.get("symbol", "")
+    ticker, expiry, strike, option_type = parse_option_symbol(symbol)
+    if not ticker:
+        ticker = clean_ticker(symbol)
     side = "BULLISH" if option_type == "CALL" else "BEARISH"
+    
+    # Flatten meta_ fields
+    meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
+    
     premium = meta.get("total_premium", 0)
     vol = meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0))
     oi = meta.get("open_interest", 1)
@@ -141,7 +180,7 @@ def is_market_open():
     hour = now.hour + now.minute / 60.0
     return 9.5 <= hour <= 16.0
 
-# ====================== AI-DRIVEN SCANNER (unchanged) ======================
+# ====================== AI-DRIVEN SCANNER ======================
 @tasks.loop(seconds=45)
 async def auto_alert_scanner():
     if not is_market_open():
@@ -161,6 +200,14 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
+    # Enrich with underlying move %
+    for trade in triggered:
+        meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
+        underlying_ticker = meta.get("underlying_symbol") or clean_ticker(trade.get("symbol", ""))
+        if underlying_ticker:
+            move = await get_underlying_move(underlying_ticker)
+            trade["underlying_move_percent"] = move
+
     try:
         context = json.dumps(triggered, default=str, indent=2)
 
@@ -169,12 +216,13 @@ Decide which trades are truly high-conviction setups worth alerting on. Be selec
 
 Rules to follow (guardrails):
 - Ignore deep ITM trades (OTM% ≤ -5%)
-- 0 DTE: extremely strict — only alert on exceptional cases
+- 0 DTE: extremely strict — only alert on exceptional cases with very high premium, strong volume spike, and clear directional conviction
 - 1-3 DTE: still strict
 - Sweeps are preferred but not required
 - Prefer new opening positions (volume clearly > open interest)
-- Larger trade volume (absolute volume AND vol/OI ratio) indicates higher conviction — prioritize significantly larger volume trades over smaller ones in the same batch
+- Larger trade volume (absolute volume AND vol/OI ratio) indicates higher conviction — prioritize significantly larger volume trades
 - Prefer directional conviction shown by ask/bid volume imbalance
+- Consider the underlying stock's today's move % (avoid chasing big moves)
 
 Only output trades you genuinely believe are good plays. If none, output nothing.
 
@@ -189,7 +237,7 @@ Output format:
                     "model": "grok-4-fast-reasoning",
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Here are the latest custom alert trades from my filters:\n{context}\n\nWhich ones are high-conviction setups? Output only the good ones in the exact short format above, or nothing if none qualify."}
+                        {"role": "user", "content": f"Here are the latest custom alert trades (with underlying move % added):\n{context}\n\nWhich ones are high-conviction setups? Output only the good ones in the exact short format above, or nothing."}
                     ],
                     "temperature": 0.25,
                     "max_tokens": 1500
@@ -217,7 +265,7 @@ Output format:
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# ====================== IMPROVED CONVERSATIONAL MODE ======================
+# ====================== CONVERSATIONAL MODE ======================
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -246,21 +294,28 @@ async def on_message(message: discord.Message):
             general_flow = await get_flow_alerts(limit=200, ticker=ticker)
             custom_alerts = await get_custom_alerts()
 
-            context = f"General recent flow:\n{json.dumps(general_flow, default=str, indent=2)}\n\nTriggered custom alerts:\n{json.dumps(custom_alerts, default=str, indent=2)}"
+            # Enrich custom alerts with underlying move for chat too
+            for trade in custom_alerts:
+                meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
+                underlying_ticker = meta.get("underlying_symbol") or clean_ticker(trade.get("symbol", ""))
+                if underlying_ticker:
+                    move = await get_underlying_move(underlying_ticker)
+                    trade["underlying_move_percent"] = move
 
-            # === IMPROVED PROMPT WITH YOUR NEW RULE + GUARDRAILS ===
+            context = f"General recent flow:\n{json.dumps(general_flow, default=str, indent=2)}\n\nTriggered custom alerts (with underlying move %):\n{json.dumps(custom_alerts, default=str, indent=2)}"
+
             system_prompt = """You are a balanced, evidence-based smart-money options flow analyst.
 Use the provided data to give truthful, contextual analysis.
 
 Guardrails (use as strong guidance, not absolute rules):
 - Larger absolute trade volume AND higher vol/OI ratio generally indicate higher conviction
-- Sweeps and aggressive execution (ask for calls, bid for puts) add conviction
-- Always consider the overall market direction and recent underlying price move
+- Sweeps and aggressive execution add conviction
+- Always consider the overall market direction and recent underlying price move %
 - Large put flow during a strong rally is often hedging/protection rather than pure bearish conviction
 - Large call flow during a selloff is often short covering or hedging
 - Be willing to say when flow contradicts price action or looks like chasing
 
-Be objective. Highlight both bullish and bearish signals with their relative conviction levels. Cite specific numbers (premium, volume, vol/OI, sweeps, etc.)."""
+Be objective. Highlight both bullish and bearish signals with their relative conviction levels. Cite specific numbers."""
 
             full_query = f"{query}\n\n{context}\n\nProvide a concise, evidence-based analysis. Highlight only high-conviction setups with specific numbers."
 
