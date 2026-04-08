@@ -123,7 +123,7 @@ def clean_ticker(symbol):
     parsed = parse_option_symbol(symbol)
     return parsed[0] if parsed[0] else "UNKNOWN"
 
-def format_short_alert(trade, conviction="Medium"):
+def format_short_alert(trade, conviction="Medium", explanation=""):
     symbol = trade.get("symbol", "")
     ticker, expiry, strike, option_type = parse_option_symbol(symbol)
     if not ticker:
@@ -134,21 +134,22 @@ def format_short_alert(trade, conviction="Medium"):
     
     premium = meta.get("total_premium", 0)
     vol = meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0))
-    oi = meta.get("open_interest", 1)
     avg_fill = meta.get("avg_fill", meta.get("avg_fill_price", "N/A"))
+    oi = meta.get("open_interest", 1)
     vol_oi = meta.get("vol_oi_ratio", round(vol / oi, 2) if oi > 0 else 0)
     sweep = "SWEEP" if meta.get("has_sweep") or meta.get("is_sweep") else "BLOCK"
     exec_side = meta.get("execution_side", "N/A")
-    exec_pct = meta.get("execution_side_percent", "")
+    exec_pct = f"{meta.get('execution_side_percent', '')}%"
 
-    alert_line = f"🚨🚨🚨 {ticker} ${strike} {expiry} {option_type} | {side} | Conviction: {conviction}"
-    details = f"Prem:${premium:,} | Vol:{vol} | Avg Fill:${avg_fill} | OI:{oi} | Vol/OI:{vol_oi} | {sweep} | {exec_side} {exec_pct}%"
-
-    explanation = trade.get("explanation", "")
+    line1 = f"🚨🚨🚨 {ticker} ${strike} {expiry} {option_type} | {side} | Conviction: {conviction}"
+    line2 = f"Prem:${premium:,} | Vol:{vol} | Avg Fill:${avg_fill} | OI:{oi} | Vol/OI:{vol_oi} | {sweep} | {exec_side} {exec_pct}"
+    
+    full_alert = f"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n{line1}\n{line2}"
     if explanation:
-        explanation = f"\n→ {explanation}"
+        full_alert += f"\n→ {explanation}"
+    full_alert += "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
 
-    return f"{alert_line}\n{details}{explanation}\n{'─' * 60}"
+    return full_alert
 
 def is_market_open():
     now = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=4)
@@ -190,7 +191,6 @@ Be extremely selective.
 STRICT NO-CHASING RULE:
 - If underlying up > 3% today, do not chase bullish flow (calls). Larger moves = stricter.
 - If underlying down > 3% today, do not chase bearish flow (puts). Larger moves = stricter.
-- Only allow exceptions for highly exceptional flow.
 
 VERY STRICT ETF RULES:
 - Major Index ETFs (SPY, QQQ, etc.): Extremely high bar. Default to NO alert.
@@ -201,13 +201,18 @@ Other Rules:
 - Prefer new opening positions
 - Prefer directional conviction
 
-For each alert you choose, assign Conviction: High / Medium / Exceptional and add a very short 1-line explanation (why it was alerted, possible insider/institutional/hedging, quick trade or longer hold).
+For each alert you choose, assign Conviction: High / Medium / Exceptional and add a very short 1-line explanation (possible hedging, institutional positioning, insider knowledge, quick trade or longer hold).
 
 Output exactly in this format (one alert per block):
 
-🚨🚨🚨 SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+🚨🚨🚨
+SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
+
 Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | EXEC_SIDE XX%
-→ Short explanation here
+
+Short explanation here
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 If nothing qualifies, output nothing."""
 
@@ -233,13 +238,14 @@ If nothing qualifies, output nothing."""
             ai_reply = data["choices"][0]["message"]["content"].strip()
 
             if ai_reply and len(ai_reply) > 20 and "nothing" not in ai_reply.lower():
-                # Split into individual alerts and send with spacing
-                alerts = [block.strip() for block in ai_reply.split('\n\n') if block.strip().startswith("🚨")]
+                alerts = [block.strip() for block in ai_reply.split("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~") if "🚨" in block]
                 for alert in alerts:
-                    await channel.send(alert)
-                    await channel.send(" ")  # extra blank line for readability
-                    print(f"  ✅ AI ALERT SENT")
-                    await asyncio.sleep(1.5)
+                    clean_alert = alert.strip()
+                    if clean_alert:
+                        await channel.send(clean_alert)
+                        await channel.send(" ")  # extra spacing
+                        print(f"  ✅ AI ALERT SENT")
+                        await asyncio.sleep(1.5)
             else:
                 print("  AI decided no high-conviction alerts this cycle")
 
@@ -248,7 +254,7 @@ If nothing qualifies, output nothing."""
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# Conversational mode (kept clean)
+# Conversational mode (kept simple)
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
