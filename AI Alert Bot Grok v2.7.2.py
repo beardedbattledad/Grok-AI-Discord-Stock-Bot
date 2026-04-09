@@ -128,6 +128,22 @@ def get_trade_key(trade):
         return f"{ticker}_{strike}_{expiry}_{option_type}"
     return None
 
+def get_execution_side(trade):
+    meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
+    bid_vol = meta.get("bid_volume", 0)
+    ask_vol = meta.get("ask_volume", 0)
+    total_vol = bid_vol + ask_vol
+    if total_vol > 0:
+        ask_pct = (ask_vol / total_vol) * 100
+        if ask_pct >= 70:
+            return "Ask"
+        elif ask_pct <= 30:
+            return "Bid"
+        else:
+            return "Mixed"
+    # fallback
+    return meta.get("execution_side", "N/A")
+
 def format_short_alert(trade, conviction="Medium", explanation=""):
     symbol = trade.get("symbol", "")
     ticker, expiry, strike, option_type = parse_option_symbol(symbol)
@@ -135,8 +151,9 @@ def format_short_alert(trade, conviction="Medium", explanation=""):
         ticker = clean_ticker(symbol)
     side = "BULLISH" if option_type == "CALL" else "BEARISH"
     
-    # FORCE CORRECT TOTAL PREMIUM
     meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
+    
+    # FORCE TOTAL PREMIUM
     premium = trade.get("clean_total_premium", meta.get("total_premium", 0))
     
     vol = meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0))
@@ -144,7 +161,7 @@ def format_short_alert(trade, conviction="Medium", explanation=""):
     oi = meta.get("open_interest", 1)
     vol_oi = round(vol / oi, 2) if oi > 0 else 0
     sweep = "SWEEP" if meta.get("has_sweep") or meta.get("is_sweep") else "BLOCK"
-    exec_side = meta.get("execution_side", "N/A")
+    exec_side = get_execution_side(trade)
     exec_pct = f"{meta.get('execution_side_percent', 0)}%"
 
     line1 = f"🚨🚨🚨 {ticker} ${strike} {expiry} {option_type} | {side} | Conviction: {conviction}"
@@ -180,11 +197,11 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # === PRE-COMPUTE CLEAN TOTAL PREMIUM SO AI CANNOT GET IT WRONG ===
+    # Pre-compute clean fields
     for trade in triggered:
         meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
         total_premium = meta.get("total_premium", 0)
-        trade["clean_total_premium"] = int(total_premium)   # This is the real total dollar amount
+        trade["clean_total_premium"] = int(total_premium)
         underlying_ticker = meta.get("underlying_symbol") or clean_ticker(trade.get("symbol", ""))
         if underlying_ticker:
             move = await get_underlying_move(underlying_ticker)
@@ -201,8 +218,8 @@ STRICT RULES:
 - Minimum volume 1000 contracts
 - Larger volume + higher vol/OI = higher conviction
 
-For the Prem: line you MUST ALWAYS use the pre-computed "clean_total_premium" field.
-This is the TOTAL dollar amount spent on the trade. Never use avg_fill, avg_fill_price, or any other price field.
+For the Prem: line ALWAYS use the pre-computed "clean_total_premium" field (total dollar amount).
+For EXEC_SIDE use the provided execution side info.
 
 Output exactly in this format (nothing else):
 
@@ -226,7 +243,7 @@ If nothing qualifies, output nothing."""
                     "model": "grok-4-fast-reasoning",
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Here are the latest custom alert trades (with clean_total_premium already added):\n{context}\n\nApply all rules strictly. Output only valid alerts in the exact format, or nothing."}
+                        {"role": "user", "content": f"Here are the latest custom alert trades (with clean_total_premium and execution side info added):\n{context}\n\nApply all rules strictly. Output only valid alerts in the exact format, or nothing."}
                     ],
                     "temperature": 0.25,
                     "max_tokens": 2000
@@ -265,14 +282,6 @@ If nothing qualifies, output nothing."""
         print(f"  AI decision error: {e}")
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
-
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot:
-        return
-    if bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel):
-        # (conversational mode code unchanged - kept short for space)
-        await message.reply("Conversational mode is still working — just testing premium fix on alerts first.")
 
 @bot.event
 async def on_ready():
