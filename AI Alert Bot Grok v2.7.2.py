@@ -27,7 +27,7 @@ MAJOR_INDEX_ETFS = {"SPY", "QQQ", "SOXX", "IWM", "DIA", "XLK", "XLF"}
 alert_configs = {}
 last_alert_time = None
 underlying_move_cache = {}
-seen_trade_keys = set()
+seen_trade_keys = set()  # Global dedup across cycles
 
 async def load_alert_configs():
     global alert_configs
@@ -143,6 +143,15 @@ def get_execution_side(trade):
             return "Mixed"
     return "N/A"
 
+def calculate_total_premium(trade):
+    meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
+    premium = meta.get("total_premium") or meta.get("premium") or 0
+    if premium == 0:
+        vol = meta.get("volume", 0)
+        avg_fill = meta.get("avg_fill") or meta.get("avg_fill_price") or 0
+        premium = vol * avg_fill
+    return int(premium)
+
 def format_short_alert(trade, conviction="Medium", explanation=""):
     symbol = trade.get("symbol", "")
     ticker, expiry, strike, option_type = parse_option_symbol(symbol)
@@ -150,22 +159,9 @@ def format_short_alert(trade, conviction="Medium", explanation=""):
         ticker = clean_ticker(symbol)
     side = "BULLISH" if option_type == "CALL" else "BEARISH"
     
+    premium = trade.get("clean_total_premium", 0)
     meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
     
-    # FORCE CORRECT TOTAL PREMIUM - try multiple possible keys
-    premium = 0
-    if "clean_total_premium" in trade:
-        premium = trade["clean_total_premium"]
-    else:
-        premium = meta.get("total_premium", 0)
-        if premium == 0:
-            premium = meta.get("premium", 0)
-            if premium == 0:
-                # Last resort: calculate from volume * avg fill (sometimes the only way)
-                vol = meta.get("volume", 0)
-                avg_fill = meta.get("avg_fill", meta.get("avg_fill_price", 0))
-                premium = vol * avg_fill
-
     vol = meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0))
     avg_fill = meta.get("avg_fill", meta.get("avg_fill_price", "N/A"))
     oi = meta.get("open_interest", 1)
@@ -175,7 +171,7 @@ def format_short_alert(trade, conviction="Medium", explanation=""):
     exec_pct = f"{meta.get('execution_side_percent', 0)}%"
 
     line1 = f"🚨🚨🚨 {ticker} ${strike} {expiry} {option_type} | {side} | Conviction: {conviction}"
-    line2 = f"Prem:${int(premium):,} | Vol:{vol} | Avg Fill:${avg_fill} | OI:{oi} | Vol/OI:{vol_oi} | {sweep} | {exec_side} {exec_pct}"
+    line2 = f"Prem:${premium:,} | Vol:{vol} | Avg Fill:${avg_fill} | OI:{oi} | Vol/OI:{vol_oi} | {sweep} | {exec_side} {exec_pct}"
 
     full_alert = f"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n🚨🚨🚨\n\n{line1}\n\n{line2}"
     if explanation and explanation.strip():
@@ -207,25 +203,35 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # Pre-compute clean premium
+    # === STRONG DEDUPLICATION BEFORE AI ===
+    unique_trades = []
     for trade in triggered:
-        meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
-        total_premium = meta.get("total_premium", 0)
-        if total_premium == 0:
-            total_premium = meta.get("premium", 0)
-        if total_premium == 0:
-            vol = meta.get("volume", 0)
-            avg_fill = meta.get("avg_fill", meta.get("avg_fill_price", 0))
-            total_premium = vol * avg_fill
-        trade["clean_total_premium"] = int(total_premium)
+        key = get_trade_key(trade)
+        if key and key not in seen_trade_keys:
+            seen_trade_keys.add(key)
+            unique_trades.append(trade)
+        else:
+            print(f"  Duplicate skipped early: {key}")
 
+    if not unique_trades:
+        print("  All trades were duplicates - nothing new")
+        print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
+        return
+
+    # Pre-compute premium
+    for trade in unique_trades:
+        premium = calculate_total_premium(trade)
+        trade["clean_total_premium"] = premium
+        print(f"  Debug - Ticker: {clean_ticker(trade.get('symbol',''))} | Premium: ${premium:,} | Vol: {trade.get('meta_volume', 'N/A')}")
+
+        meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
         underlying_ticker = meta.get("underlying_symbol") or clean_ticker(trade.get("symbol", ""))
         if underlying_ticker:
             move = await get_underlying_move(underlying_ticker)
             trade["underlying_move_percent"] = move
 
     try:
-        context = json.dumps(triggered, default=str, indent=2)
+        context = json.dumps(unique_trades, default=str, indent=2)
 
         system_prompt = """You are a sharp, conservative options flow analyst. 
 Be extremely selective.
@@ -235,7 +241,7 @@ STRICT RULES:
 - Minimum volume 1000 contracts
 - Larger volume + higher vol/OI = higher conviction
 
-Use the pre-computed "clean_total_premium" for Prem: (this is the real total dollar amount).
+Use the pre-computed "clean_total_premium" for the Prem: line (this is the real total dollar amount).
 
 Output exactly in this format (nothing else):
 
@@ -259,7 +265,7 @@ If nothing qualifies, output nothing."""
                     "model": "grok-4-fast-reasoning",
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Here are the latest custom alert trades (with clean_total_premium added):\n{context}\n\nApply all rules strictly. Output only valid alerts in the exact format, or nothing."}
+                        {"role": "user", "content": f"Here are the latest unique custom alert trades (with clean_total_premium added):\n{context}\n\nApply all rules strictly. Output only valid alerts in the exact format, or nothing."}
                     ],
                     "temperature": 0.25,
                     "max_tokens": 2000
@@ -267,6 +273,7 @@ If nothing qualifies, output nothing."""
             )
 
             if resp.status_code != 200:
+                print(f"  Grok API error: {resp.status_code}")
                 return
 
             data = resp.json()
@@ -277,16 +284,6 @@ If nothing qualifies, output nothing."""
                 for alert in alerts:
                     clean_alert = alert.strip()
                     if clean_alert:
-                        trade_key = None
-                        for t in triggered:
-                            if str(t.get("symbol", "")).strip() in clean_alert:
-                                trade_key = get_trade_key(t)
-                                break
-                        if trade_key and trade_key in seen_trade_keys:
-                            continue
-                        if trade_key:
-                            seen_trade_keys.add(trade_key)
-
                         await channel.send(clean_alert)
                         await channel.send(" ")  
                         print(f"  ✅ AI ALERT SENT")
