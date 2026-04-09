@@ -27,7 +27,7 @@ MAJOR_INDEX_ETFS = {"SPY", "QQQ", "SOXX", "IWM", "DIA", "XLK", "XLF"}
 alert_configs = {}
 last_alert_time = None
 underlying_move_cache = {}
-seen_trade_keys = set()   # Prevents duplicates using raw trade key
+seen_trade_keys = set()
 
 async def load_alert_configs():
     global alert_configs
@@ -125,7 +125,6 @@ def clean_ticker(symbol):
     return parsed[0] if parsed[0] else "UNKNOWN"
 
 def get_trade_key(trade):
-    """Create a unique key from raw data to stop duplicates"""
     symbol = str(trade.get("symbol", "")).strip()
     ticker, expiry, strike, option_type = parse_option_symbol(symbol)
     if ticker and strike is not None and option_type:
@@ -141,7 +140,10 @@ def format_short_alert(trade, conviction="Medium", explanation=""):
     
     meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
     
-    premium = meta.get("total_premium", 0)
+    premium = meta.get("total_premium", 0)  # Force total premium
+    if premium == 0:
+        premium = meta.get("premium", 0)  # fallback
+
     vol = meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0))
     avg_fill = meta.get("avg_fill", meta.get("avg_fill_price", "N/A"))
     oi = meta.get("open_interest", 1)
@@ -184,7 +186,6 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # Enrich with underlying move %
     for trade in triggered:
         meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
         underlying_ticker = meta.get("underlying_symbol") or clean_ticker(trade.get("symbol", ""))
@@ -212,10 +213,7 @@ Other Rules:
 - Prefer new opening positions
 - Prefer directional conviction
 
-For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation that includes:
-- Why it flagged (volume spike, sweep, opening positions, etc.)
-- Possible context (hedging, institutional positioning, insider knowledge, etc.)
-- Trade implication (quick trade vs longer hold)
+For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation.
 
 Output exactly in this format:
 
@@ -257,10 +255,9 @@ If nothing qualifies, output nothing."""
                 for alert in alerts:
                     clean_alert = alert.strip()
                     if clean_alert:
-                        # Strong duplicate prevention using raw trade key
                         trade_key = None
                         for t in triggered:
-                            if str(t.get("symbol", "")).strip() in clean_alert or clean_alert in str(t.get("symbol", "")):
+                            if str(t.get("symbol", "")).strip() in clean_alert:
                                 trade_key = get_trade_key(t)
                                 break
                         if trade_key and trade_key in seen_trade_keys:
