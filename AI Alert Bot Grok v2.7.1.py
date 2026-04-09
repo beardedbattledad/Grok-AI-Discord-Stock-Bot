@@ -145,10 +145,10 @@ def format_short_alert(trade, conviction="Medium", explanation=""):
     line1 = f"🚨🚨🚨 {ticker} ${strike} {expiry} {option_type} | {side} | Conviction: {conviction}"
     line2 = f"Prem:${premium:,} | Vol:{vol} | Avg Fill:${avg_fill} | OI:{oi} | Vol/OI:{vol_oi} | {sweep} | {exec_side} {exec_pct}"
 
-    full_alert = f"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n{line1}\n{line2}"
+    full_alert = f"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n🚨🚨🚨\n\n{line1}\n\n{line2}"
     if explanation and explanation.strip():
-        full_alert += f"\n→ {explanation.strip()}"
-    full_alert += "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+        full_alert += f"\n\n→ {explanation.strip()}"
+    full_alert += "\n\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
 
     return full_alert
 
@@ -198,6 +198,7 @@ VERY STRICT ETF RULES:
 
 Other Rules:
 - Ignore deep ITM (more than 5% ITM)
+- Minimum volume: at least 1000 contracts for most alerts (higher for low-OI contracts)
 - Larger volume + higher vol/OI = higher conviction
 - Prefer new opening positions
 - Prefer directional conviction
@@ -210,7 +211,9 @@ For each alert you choose, assign Conviction: High / Medium / Exceptional and wr
 Output exactly in this format:
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-🚨🚨🚨 SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
+🚨🚨🚨
+
+SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
 
 Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | EXEC_SIDE XX%
 
@@ -261,7 +264,7 @@ If nothing qualifies, output nothing."""
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# Conversational mode (unchanged)
+# Conversational mode
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
