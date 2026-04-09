@@ -27,6 +27,7 @@ MAJOR_INDEX_ETFS = {"SPY", "QQQ", "SOXX", "IWM", "DIA", "XLK", "XLF"}
 alert_configs = {}
 last_alert_time = None
 underlying_move_cache = {}
+seen_alerts = set()
 
 async def load_alert_configs():
     global alert_configs
@@ -103,30 +104,9 @@ async def get_custom_alerts():
         print(f"Custom alerts fetch error: {e}")
         return []
 
-async def get_flow_alerts(limit=200, ticker=None):
-    try:
-        headers = {"Authorization": f"Bearer {UW_API_KEY}"}
-        base_url = "https://api.unusualwhales.com"
-        if ticker:
-            url = f"{base_url}/api/stock/{ticker.upper()}/flow-alerts"
-        else:
-            url = f"{base_url}/api/option-trades/flow-alerts"
-        params = {"limit": limit}
-
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(url, headers=headers, params=params)
-            print(f"→ General Flow API Status: {resp.status_code}")
-            data = resp.json() if resp.status_code == 200 else {"error": resp.text}
-            if isinstance(data, dict) and isinstance(data.get("data"), list):
-                return data["data"][:150]
-            return []
-    except Exception as e:
-        print(f"General flow error: {e}")
-        return []
-
 def parse_option_symbol(symbol):
     symbol = str(symbol).strip()
-    match = re.match(r'^([A-Z]+)(\d{6})([CP])(\d+)', symbol)
+    match = re.match(r'^([A-Z]+)(\d{6})([CP])0*(\d+)', symbol)
     if match:
         ticker = match.group(1)
         date_str = match.group(2)
@@ -217,18 +197,23 @@ VERY STRICT ETF RULES:
 - Major Index ETFs (SPY, QQQ, etc.): Extremely high bar. Default to NO alert.
 
 Other Rules:
-- Ignore deep ITM (OTM% ≤ -5%)
+- Ignore deep ITM (more than 5% ITM)
 - Larger volume + higher vol/OI = higher conviction
 - Prefer new opening positions
 - Prefer directional conviction
 
-For each alert you choose, assign Conviction: High / Medium / Exceptional and add a very short 1-line explanation (possible hedging, institutional positioning, insider knowledge, quick trade or longer hold).
+For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation that includes:
+- Why it flagged (volume spike, sweep, opening positions, etc.)
+- Possible context (hedging, institutional positioning, insider knowledge, etc.)
+- Trade implication (quick trade vs longer hold)
 
-Output exactly in this format (one alert per block):
+Output exactly in this format:
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 🚨🚨🚨 SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
+
 Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | EXEC_SIDE XX%
+
 → Short explanation here
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -260,8 +245,12 @@ If nothing qualifies, output nothing."""
                 for alert in alerts:
                     clean_alert = alert.strip()
                     if clean_alert:
+                        alert_key = re.sub(r'\s+', '', clean_alert.lower())[:120]
+                        if alert_key in seen_alerts:
+                            continue
+                        seen_alerts.add(alert_key)
                         await channel.send(clean_alert)
-                        await channel.send(" ")  # extra spacing
+                        await channel.send(" ")  
                         print(f"  ✅ AI ALERT SENT")
                         await asyncio.sleep(1.5)
             else:
@@ -272,7 +261,7 @@ If nothing qualifies, output nothing."""
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
-# ====================== CONVERSATIONAL MODE ======================
+# Conversational mode (unchanged)
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
