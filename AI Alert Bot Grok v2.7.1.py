@@ -192,15 +192,16 @@ Be extremely selective.
 STRICT NO-CHASING RULE:
 - If underlying up > 3% today, do not chase bullish flow (calls). Larger moves = stricter.
 - If underlying down > 3% today, do not chase bearish flow (puts). Larger moves = stricter.
+- No chasing rule can be ignored ONLY if the signal is extremely high elsewhere.
 
 VERY STRICT ETF RULES:
-- Major Index ETFs (SPY, QQQ, etc.): Extremely high bar. Default to NO alert.
+- Major Index ETFs (SPY, QQQ, etc.): Extremely high bar. Look for either super sudden high volume spikes or longer dated high conviction/extremely high premium on top of higher strictness with other rules.
 
 Other Rules:
-- Ignore deep ITM (more than 5% ITM)
+- Ignore deep ITM (more than 5% ITM). Prefer OTM contracts. ITM/ATM contracts must be very high on other signals for alerts.
 - Minimum volume: at least 1000 contracts for most alerts (higher for low-OI contracts)
-- Larger volume + higher vol/OI = higher conviction
-- Prefer new opening positions
+- Larger volume + larger premium + higher vol/OI = higher conviction
+- Prefer new opening positions (volume > OI)
 - Prefer directional conviction
 
 For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation that includes:
