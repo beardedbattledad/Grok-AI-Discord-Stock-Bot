@@ -130,8 +130,8 @@ def get_trade_key(trade):
 
 def get_execution_side(trade):
     meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
-    bid_vol = meta.get("bid_volume", 0)
-    ask_vol = meta.get("ask_volume", 0)
+    bid_vol = int(meta.get("bid_volume", 0))
+    ask_vol = int(meta.get("ask_volume", 0))
     total_vol = bid_vol + ask_vol
     if total_vol > 0:
         ask_pct = (ask_vol / total_vol) * 100
@@ -141,8 +141,7 @@ def get_execution_side(trade):
             return "Bid"
         else:
             return "Mixed"
-    # fallback
-    return meta.get("execution_side", "N/A")
+    return "N/A"
 
 def format_short_alert(trade, conviction="Medium", explanation=""):
     symbol = trade.get("symbol", "")
@@ -153,9 +152,20 @@ def format_short_alert(trade, conviction="Medium", explanation=""):
     
     meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
     
-    # FORCE TOTAL PREMIUM
-    premium = trade.get("clean_total_premium", meta.get("total_premium", 0))
-    
+    # FORCE CORRECT TOTAL PREMIUM - try multiple possible keys
+    premium = 0
+    if "clean_total_premium" in trade:
+        premium = trade["clean_total_premium"]
+    else:
+        premium = meta.get("total_premium", 0)
+        if premium == 0:
+            premium = meta.get("premium", 0)
+            if premium == 0:
+                # Last resort: calculate from volume * avg fill (sometimes the only way)
+                vol = meta.get("volume", 0)
+                avg_fill = meta.get("avg_fill", meta.get("avg_fill_price", 0))
+                premium = vol * avg_fill
+
     vol = meta.get("volume", meta.get("ask_volume", 0) + meta.get("bid_volume", 0))
     avg_fill = meta.get("avg_fill", meta.get("avg_fill_price", "N/A"))
     oi = meta.get("open_interest", 1)
@@ -165,7 +175,7 @@ def format_short_alert(trade, conviction="Medium", explanation=""):
     exec_pct = f"{meta.get('execution_side_percent', 0)}%"
 
     line1 = f"🚨🚨🚨 {ticker} ${strike} {expiry} {option_type} | {side} | Conviction: {conviction}"
-    line2 = f"Prem:${premium:,} | Vol:{vol} | Avg Fill:${avg_fill} | OI:{oi} | Vol/OI:{vol_oi} | {sweep} | {exec_side} {exec_pct}"
+    line2 = f"Prem:${int(premium):,} | Vol:{vol} | Avg Fill:${avg_fill} | OI:{oi} | Vol/OI:{vol_oi} | {sweep} | {exec_side} {exec_pct}"
 
     full_alert = f"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n🚨🚨🚨\n\n{line1}\n\n{line2}"
     if explanation and explanation.strip():
@@ -197,11 +207,18 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # Pre-compute clean fields
+    # Pre-compute clean premium
     for trade in triggered:
         meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
         total_premium = meta.get("total_premium", 0)
+        if total_premium == 0:
+            total_premium = meta.get("premium", 0)
+        if total_premium == 0:
+            vol = meta.get("volume", 0)
+            avg_fill = meta.get("avg_fill", meta.get("avg_fill_price", 0))
+            total_premium = vol * avg_fill
         trade["clean_total_premium"] = int(total_premium)
+
         underlying_ticker = meta.get("underlying_symbol") or clean_ticker(trade.get("symbol", ""))
         if underlying_ticker:
             move = await get_underlying_move(underlying_ticker)
@@ -218,8 +235,7 @@ STRICT RULES:
 - Minimum volume 1000 contracts
 - Larger volume + higher vol/OI = higher conviction
 
-For the Prem: line ALWAYS use the pre-computed "clean_total_premium" field (total dollar amount).
-For EXEC_SIDE use the provided execution side info.
+Use the pre-computed "clean_total_premium" for Prem: (this is the real total dollar amount).
 
 Output exactly in this format (nothing else):
 
@@ -243,7 +259,7 @@ If nothing qualifies, output nothing."""
                     "model": "grok-4-fast-reasoning",
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Here are the latest custom alert trades (with clean_total_premium and execution side info added):\n{context}\n\nApply all rules strictly. Output only valid alerts in the exact format, or nothing."}
+                        {"role": "user", "content": f"Here are the latest custom alert trades (with clean_total_premium added):\n{context}\n\nApply all rules strictly. Output only valid alerts in the exact format, or nothing."}
                     ],
                     "temperature": 0.25,
                     "max_tokens": 2000
