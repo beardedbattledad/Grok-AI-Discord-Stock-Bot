@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands, tasks
 import httpx
+import copy
 
 load_dotenv()
 
@@ -174,40 +175,55 @@ def get_iv_change(trade):
     return float(iv_change)
 
 def calculate_total_premium(trade):
-    # Fresh extraction every time - never rely on previous modifications
-    meta = {}
-    for k, v in trade.items():
-        if k.startswith("meta_"):
-            meta[k.replace("meta_", "")] = v
-        elif k in ["volume", "avg_fill", "avg_fill_price", "premium", "total_premium"]:
-            meta[k] = v
+    # Make a fresh copy so we never modify the original data
+    trade_copy = copy.deepcopy(trade)
+    
+    # Build a flat dict of all possible keys (case-insensitive search)
+    flat = {}
+    for k, v in trade_copy.items():
+        flat[k.lower()] = v
+        if isinstance(v, dict):
+            for sub_k, sub_v in v.items():
+                flat[sub_k.lower()] = sub_v
 
-    # Debug what we actually received
-    ticker = clean_ticker(trade.get("symbol", ""))
-    print(f"  DEBUG PREMIUM - Ticker: {ticker} | Available keys: {list(meta.keys())}")
+    ticker = clean_ticker(trade_copy.get("symbol", ""))
 
-    # Try every possible volume key
+    # Find volume
     vol = 0
-    for key in ["volume", "vol", "meta_volume"]:
-        if key in meta:
-            vol = int(meta[key])
-            break
+    for key in flat:
+        if any(x in key for x in ["volume", "vol"]):
+            try:
+                vol = int(flat[key])
+                if vol > 0:
+                    break
+            except:
+                pass
 
-    # Try every possible avg_fill key
+    # Find avg_fill
     avg_fill = 0.0
-    for key in ["avg_fill", "avg_fill_price", "average_fill", "meta_avg_fill", "meta_avg_fill_price"]:
-        if key in meta and meta[key] is not None:
-            avg_fill = float(meta[key])
-            break
+    for key in flat:
+        if any(x in key for x in ["avg_fill", "avgfill", "average_fill", "fill_price", "price"]):
+            try:
+                avg_fill = float(flat[key])
+                if avg_fill > 0:
+                    break
+            except:
+                pass
 
-    # ALWAYS calculate the correct way: volume * avg_fill * 100
+    # Calculate premium = volume * avg_fill * 100
     premium = vol * avg_fill * 100
 
-    # Final safety fallback
+    # Final fallback
     if premium == 0:
-        premium = meta.get("total_premium") or meta.get("premium") or 0
+        for key in flat:
+            if "premium" in key or "total_premium" in key:
+                try:
+                    premium = float(flat[key])
+                    break
+                except:
+                    pass
 
-    print(f"  DEBUG PREMIUM - Calculated for {ticker}: ${int(round(premium)):,}  (vol={vol} × avg_fill={avg_fill} × 100)")
+    print(f"  DEBUG PREMIUM - Ticker: {ticker} | vol={vol} | avg_fill={avg_fill:.2f} | Calculated: ${int(round(premium)):,}")
 
     return int(round(premium))
 
