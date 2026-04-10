@@ -143,6 +143,13 @@ def get_execution_side(trade):
             return "Mixed"
     return "N/A"
 
+def get_iv_change(trade):
+    """Extract IV change from meta fields (common keys in custom alerts)"""
+    meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
+    # Try common IV change keys from Unusual Whales alerts
+    iv_change = meta.get("iv_change") or meta.get("iv_percent_change") or meta.get("delta_iv") or 0.0
+    return float(iv_change)    
+
 def calculate_total_premium(trade):
     meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
     premium = meta.get("total_premium") or meta.get("premium") or 0
@@ -218,11 +225,15 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # Pre-compute premium
+        # Pre-compute clean premium + IV change
     for trade in unique_trades:
         premium = calculate_total_premium(trade)
         trade["clean_total_premium"] = premium
-        print(f"  Debug - Ticker: {clean_ticker(trade.get('symbol',''))} | Premium: ${premium:,} | Vol: {trade.get('meta_volume', 'N/A')}")
+        
+        # === IV CHANGE ADDED HERE ===
+        iv_change = get_iv_change(trade)
+        trade["iv_change"] = iv_change
+        print(f"  Debug - Ticker: {clean_ticker(trade.get('symbol',''))} | Premium: ${premium:,} | IV Change: {iv_change:+.2f}% | Vol: {trade.get('meta_volume', 'N/A')}")
 
         meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
         underlying_ticker = meta.get("underlying_symbol") or clean_ticker(trade.get("symbol", ""))
@@ -244,24 +255,32 @@ STRICT NO-CHASING RULE:
 VERY STRICT ETF RULES:
 - Major Index ETFs (SPY, QQQ, etc.): Extremely high bar. Look for either super sudden high volume spikes or longer dated high conviction/extremely high premium on top of higher strictness with other rules.
 
-Other Rules:
+IV CHANGE AS ASCENDING FILL PROXY:
+- Positive IV change (especially +3% or more) combined with heavy Ask-side volume, sweeps, or high vol/OI often signals aggressive buyers paying up (ascending fills / smart money lifting offers).
+- Negative or flat IV with heavy volume is usually less directional or hedging.
+
+Other Rules:    
 - Ignore deep ITM (more than 5% ITM). Prefer OTM contracts. ITM/ATM contracts must be very high on other signals for alerts.
-- Minimum volume: at least 1000 contracts for most alerts (higher for low-OI contracts)
+- The higher the volume the better the trade.
 - Larger volume + larger premium + higher vol/OI = higher conviction
 - Prefer new opening positions (volume > OI)
+- If the last trade had a higher fill than the first trade in the volume (ascending fill) then higher conviction.
+- Must have multiple signals that confirm good trade likelihood.
 - Prefer directional conviction
 
 For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation that includes:
-- Why it flagged (volume spike, sweep, opening positions, etc.)
+- Why it flagged (volume spike, sweep, opening positions, IV spike, etc.)
 - Possible context (hedging, institutional positioning, insider knowledge, etc.)
 - Trade implication (quick trade vs longer hold)
 
 Use the pre-computed "clean_total_premium" for the Prem: line (this is the real total dollar amount).
+Use whatever side the trade is on (either Bid or Ask) for the "EXEC_SIDE"
+For "SWEEP/BLOCK" indicate if the trade was a sweep or a block trade. Typically a block if it is not a sweep.
 
 Output exactly in this format (nothing else):
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-🚨🚨🚨
+🚨🚨🚨🚨🚨🚨
 
 SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
 
