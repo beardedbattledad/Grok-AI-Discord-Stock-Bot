@@ -128,19 +128,44 @@ async def get_flow_alerts(limit=200, ticker=None):
         return []
 
 def parse_option_symbol(symbol):
-    symbol = str(symbol).strip()
-    match = re.match(r'^([A-Z]+)(\d{6})([CP])0*(\d+)', symbol)
+    symbol = str(symbol).strip().upper()
+    if not symbol:
+        return None, None, None, None
+
+    # Match: ticker + YYMMDD + C/P + 8-digit strike
+    match = re.match(r'^([A-Z]+)(\d{6})([CP])(\d{8})', symbol)
     if match:
         ticker = match.group(1)
         date_str = match.group(2)
         opt_type = "CALL" if match.group(3) == "C" else "PUT"
-        strike = int(match.group(4)) / 1000
+        strike_str = match.group(4)
+
+        # Parse strike digit-by-digit based on position (no fixed divide)
+        if len(strike_str) == 8:
+            digits = [int(d) for d in strike_str]
+            strike = (digits[0] * 10000 +
+                      digits[1] * 1000 +
+                      digits[2] * 100 +
+                      digits[3] * 10 +
+                      digits[4] * 1 +
+                      digits[5] * 0.1 +
+                      digits[6] * 0.01 +
+                      digits[7] * 0.001)
+        else:
+            strike = None
+
+        # Format expiry
         try:
             expiry_date = datetime.datetime.strptime(date_str, "%y%m%d").date()
             expiry = expiry_date.strftime("%m/%d/%y")
         except:
             expiry = "UNKNOWN"
+
+        print(f"  DEBUG PARSE - Symbol: {symbol} → Ticker: {ticker}, Expiry: {expiry}, Strike: {strike}, Type: {opt_type}")
+
         return ticker, expiry, strike, opt_type
+
+    print(f"  DEBUG PARSE FAILED - Symbol: {symbol}")
     return None, None, None, None
 
 def clean_ticker(symbol):
