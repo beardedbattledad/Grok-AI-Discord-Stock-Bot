@@ -3,12 +3,17 @@ import asyncio
 import datetime
 import json
 import re
+import logging
 from dotenv import load_dotenv
 import discord
 from discord.ext import commands, tasks
 import httpx
 
 load_dotenv()
+
+# Reduce noisy Discord gateway logs
+logging.getLogger('discord.gateway').setLevel(logging.WARNING)
+logging.getLogger('discord').setLevel(logging.WARNING)
 
 # ====================== CONFIG ======================
 XAI_API_KEY = os.getenv("XAI_API_KEY")
@@ -27,7 +32,7 @@ MAJOR_INDEX_ETFS = {"SPY", "QQQ", "SOXX", "IWM", "DIA", "XLK", "XLF"}
 alert_configs = {}
 last_alert_time = None
 underlying_move_cache = {}
-seen_trade_keys = set()  # Global dedup across cycles
+seen_trade_keys = set()
 
 async def load_alert_configs():
     global alert_configs
@@ -101,6 +106,26 @@ async def get_custom_alerts():
         print(f"Custom alerts fetch error: {e}")
         return []
 
+async def get_flow_alerts(limit=200, ticker=None):
+    """Fallback for conversational mode"""
+    try:
+        headers = {"Authorization": f"Bearer {UW_API_KEY}"}
+        base_url = "https://api.unusualwhales.com"
+        if ticker:
+            url = f"{base_url}/api/stock/{ticker.upper()}/flow-alerts"
+        else:
+            url = f"{base_url}/api/option-trades/flow-alerts"
+        params = {"limit": limit}
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("data", [])[:limit]
+            return []
+    except Exception as e:
+        print(f"Flow alerts fetch error: {e}")
+        return []
+
 def parse_option_symbol(symbol):
     symbol = str(symbol).strip()
     match = re.match(r'^([A-Z]+)(\d{6})([CP])0*(\d+)', symbol)
@@ -144,11 +169,9 @@ def get_execution_side(trade):
     return "N/A"
 
 def get_iv_change(trade):
-    """Extract IV change from meta fields (common keys in custom alerts)"""
     meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
-    # Try common IV change keys from Unusual Whales alerts
     iv_change = meta.get("iv_change") or meta.get("iv_percent_change") or meta.get("delta_iv") or 0.0
-    return float(iv_change)    
+    return float(iv_change)
 
 def calculate_total_premium(trade):
     meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
@@ -195,14 +218,19 @@ def is_market_open():
 
 @tasks.loop(seconds=45)
 async def auto_alert_scanner():
+    print("→ === CUSTOM ALERT SCAN START ===")
+
     if not is_market_open():
+        print("  Market closed - skipping scan")
+        print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
     channel = bot.get_channel(ALERT_CHANNEL_ID)
     if not channel:
+        print("  Alert channel not found")
+        print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    print("→ === CUSTOM ALERT SCAN START ===")
     triggered = await get_custom_alerts()
 
     if not triggered:
@@ -210,7 +238,7 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # === STRONG DEDUPLICATION BEFORE AI ===
+    # Strong deduplication BEFORE AI
     unique_trades = []
     for trade in triggered:
         key = get_trade_key(trade)
@@ -225,15 +253,14 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-        # Pre-compute clean premium + IV change
+    # Pre-compute clean premium + IV change
     for trade in unique_trades:
         premium = calculate_total_premium(trade)
         trade["clean_total_premium"] = premium
         
-        # === IV CHANGE ADDED HERE ===
         iv_change = get_iv_change(trade)
         trade["iv_change"] = iv_change
-        print(f"  Debug - Ticker: {clean_ticker(trade.get('symbol',''))} | Premium: ${premium:,} | IV Change: {iv_change:+.2f}% | Vol: {trade.get('meta_volume', 'N/A')}")
+        print(f"  Debug - Ticker: {clean_ticker(trade.get('symbol',''))} | Premium: ${premium:,} | IV Change: {iv_change:+.2f}%")
 
         meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
         underlying_ticker = meta.get("underlying_symbol") or clean_ticker(trade.get("symbol", ""))
@@ -259,23 +286,21 @@ IV CHANGE AS ASCENDING FILL PROXY:
 - Positive IV change (especially +3% or more) combined with heavy Ask-side volume, sweeps, or high vol/OI often signals aggressive buyers paying up (ascending fills / smart money lifting offers).
 - Negative or flat IV with heavy volume is usually less directional or hedging.
 
+PREMIUM & VOLUME CONVICTION:
+- The higher the total premium, the higher the conviction (larger dollar amount spent = stronger signal).
+- Larger positive IV change + higher premium + larger volume + higher vol/OI = significantly higher conviction.
+
 Other Rules:    
 - Ignore deep ITM (more than 5% ITM). Prefer OTM contracts. ITM/ATM contracts must be very high on other signals for alerts.
-- The higher the volume the better the trade.
 - Larger volume + larger premium + higher vol/OI = higher conviction
 - Prefer new opening positions (volume > OI)
-- If the last trade had a higher fill than the first trade in the volume (ascending fill) then higher conviction.
 - Must have multiple signals that confirm good trade likelihood.
 - Prefer directional conviction
 
-For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation that includes:
-- Why it flagged (volume spike, sweep, opening positions, IV spike, etc.)
-- Possible context (hedging, institutional positioning, insider knowledge, etc.)
-- Trade implication (quick trade vs longer hold)
+For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation.
 
-Use the pre-computed "clean_total_premium" for the Prem: line (this is the real total dollar amount).
+Use the pre-computed "clean_total_premium" for the Prem: line.
 Use whatever side the trade is on (either Bid or Ask) for the "EXEC_SIDE"
-For "SWEEP/BLOCK" indicate if the trade was a sweep or a block trade. Typically a block if it is not a sweep.
 
 Output exactly in this format (nothing else):
 
@@ -329,6 +354,95 @@ If nothing qualifies, output nothing."""
         print(f"  AI decision error: {e}")
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
+
+# ==================== CONVERSATIONAL MODE ====================
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+
+    if bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel):
+        print(f"→ Received message from {message.author}: {message.content[:100]}...")
+        query = message.clean_content.replace(f"<@{bot.user.id}>", "").strip()
+        if not query:
+            return
+
+        try:
+            async with message.channel.typing():
+                pass
+        except:
+            pass
+
+        try:
+            ticker = None
+            candidates = re.findall(r'\b[A-Z]{2,5}\b', query)
+            common_words = {"THE", "AND", "FOR", "WITH", "WHAT", "ABOUT", "DEEP", "DIVE", "LIKE", "FLOW", "OPTIONS"}
+            for cand in candidates:
+                if cand not in common_words:
+                    ticker = cand
+                    break
+
+            general_flow = await get_flow_alerts(limit=200, ticker=ticker)
+            custom_alerts = await get_custom_alerts()
+
+            for trade in custom_alerts:
+                meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
+                underlying_ticker = meta.get("underlying_symbol") or clean_ticker(trade.get("symbol", ""))
+                if underlying_ticker:
+                    move = await get_underlying_move(underlying_ticker)
+                    trade["underlying_move_percent"] = move
+
+            context = f"General recent flow:\n{json.dumps(general_flow, default=str, indent=2)}\n\nTriggered custom alerts (with underlying move %):\n{json.dumps(custom_alerts, default=str, indent=2)}"
+
+            system_prompt = """You are a balanced, evidence-based smart-money options flow analyst.
+
+Guardrails:
+- Larger volume + higher vol/OI = higher conviction
+- Always consider underlying price move and market direction
+- For ETFs: extra scrutiny
+
+Be objective. Cite specific numbers."""
+
+            full_query = f"{query}\n\n{context}\n\nProvide a concise, evidence-based analysis. Highlight only high-conviction setups with specific numbers."
+
+            async with httpx.AsyncClient(timeout=50.0) as client:
+                resp = await client.post(
+                    "https://api.x.ai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {XAI_API_KEY}", "Content-Type": "application/json"},
+                    json={
+                        "model": "grok-4-fast-reasoning",
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": full_query}
+                        ],
+                        "temperature": 0.35,
+                        "max_tokens": 1400
+                    }
+                )
+
+                if resp.status_code != 200:
+                    await message.reply(f"API error: {resp.status_code}")
+                    return
+
+                data = resp.json()
+                final_reply = data["choices"][0]["message"]["content"]
+                await send_long_message(message.channel, final_reply or "No strong signals found.")
+
+        except Exception as e:
+            print(f"Error processing message: {e}")
+            await message.reply("Sorry, I ran into an error while analyzing.")
+
+async def send_long_message(channel, text):
+    if not text:
+        await channel.send("No data available.")
+        return
+    if len(text) <= 1900:
+        await channel.send(text)
+        return
+    chunks = [text[i:i+1900] for i in range(0, len(text), 1900)]
+    for i, chunk in enumerate(chunks, 1):
+        prefix = f"**Part {i}/{len(chunks)}**\n" if len(chunks) > 1 else ""
+        await channel.send(prefix + chunk)
 
 @bot.event
 async def on_ready():
