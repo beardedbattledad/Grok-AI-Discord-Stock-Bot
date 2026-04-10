@@ -176,16 +176,16 @@ def get_iv_change(trade):
 def calculate_total_premium(trade):
     meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
     
-    # 1. Try direct total_premium from API first
-    premium = meta.get("total_premium") or meta.get("premium") or 0
+    # ALWAYS calculate from volume * avg_fill * 100 (most reliable for your alerts)
+    vol = meta.get("volume", 0)
+    avg_fill = meta.get("avg_fill") or meta.get("avg_fill_price") or 0.0
+    premium = vol * avg_fill * 100
     
-    # 2. If still zero or unrealistically small, calculate manually (volume * avg_fill * 100)
-    if premium == 0 or premium < 100:
-        vol = meta.get("volume", 0)
-        avg_fill = meta.get("avg_fill") or meta.get("avg_fill_price") or 0
-        premium = vol * avg_fill * 100   # Correct total dollar amount
+    # Safety fallback if volume or avg_fill is missing
+    if premium == 0:
+        premium = meta.get("total_premium") or meta.get("premium") or 0
     
-    return int(round(premium))   # round to clean integer
+    return int(round(premium))
 
 def format_short_alert(trade, conviction="Medium", explanation=""):
     symbol = trade.get("symbol", "")
