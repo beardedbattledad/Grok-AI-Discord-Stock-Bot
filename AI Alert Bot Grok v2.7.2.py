@@ -174,17 +174,36 @@ def get_iv_change(trade):
     return float(iv_change)
 
 def calculate_total_premium(trade):
-    meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_")}
+    # Get all keys for debugging
+    all_keys = list(trade.keys())
+    meta = {k.replace("meta_", ""): v for k, v in trade.items() if k.startswith("meta_") or k in ["volume", "avg_fill", "avg_fill_price", "premium", "total_premium"]}
     
-    # ALWAYS calculate from volume * avg_fill * 100 (most reliable for your alerts)
-    vol = meta.get("volume", 0)
-    avg_fill = meta.get("avg_fill") or meta.get("avg_fill_price") or 0.0
+    # Debug: show exactly what keys we have
+    print(f"  DEBUG PREMIUM - Ticker: {clean_ticker(trade.get('symbol',''))} | Raw keys: {all_keys[:15]}... | Meta keys: {list(meta.keys())}")
+
+    # Try every possible volume key
+    vol = 0
+    for key in ["volume", "vol", "meta_volume"]:
+        if key in meta and meta[key] > 0:
+            vol = meta[key]
+            break
+
+    # Try every possible avg_fill key
+    avg_fill = 0.0
+    for key in ["avg_fill", "avg_fill_price", "average_fill", "meta_avg_fill", "meta_avg_fill_price"]:
+        if key in meta and meta[key] > 0:
+            avg_fill = float(meta[key])
+            break
+
+    # Calculate the correct way
     premium = vol * avg_fill * 100
-    
-    # Safety fallback if volume or avg_fill is missing
+
+    # Final fallback if calculation still fails
     if premium == 0:
         premium = meta.get("total_premium") or meta.get("premium") or 0
-    
+
+    print(f"  DEBUG PREMIUM - Calculated: ${int(round(premium)):,} (vol={vol} × avg_fill={avg_fill} × 100)")
+
     return int(round(premium))
 
 def format_short_alert(trade, conviction="Medium", explanation=""):
