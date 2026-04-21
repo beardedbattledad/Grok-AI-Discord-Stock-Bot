@@ -475,7 +475,7 @@ If nothing qualifies, output nothing."""
                 # Final Grok call with full context
                 context_full = json.dumps([trade], default=str, indent=2)
 
-    # STAGE 2: Enrich only selected alerts with Dark Pool + GEX, then finalize
+        # STAGE 2: Enrich only selected alerts with Dark Pool + GEX, then finalize
     print(f"  Stage 2: Enriching {len(selected_alerts)} selected alerts with Dark Pool + GEX")
 
     for alert_text in selected_alerts:
@@ -496,10 +496,11 @@ If nothing qualifies, output nothing."""
                 if not target_channel:
                     target_channel = bot.get_channel(ALERT_CHANNEL_ID)
 
-                # Final Grok call with full context for this alert
+                # Final Grok call with full context
                 context_full = json.dumps([trade], default=str, indent=2)
 
-                system_prompt_stage2 = """You are a sharp, conservative options flow analyst. 
+                    # Stage 2 prompt: Your original rules + Dark Pool and GEX interpretation
+    system_prompt_stage2 = """You are a sharp, conservative options flow analyst. 
 Be extremely selective.
 
 STRICT NO-CHASING RULE:
@@ -575,17 +576,25 @@ If nothing qualifies, output nothing."""
                             }
                         )
 
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            ai_reply = data["choices"][0]["message"]["content"].strip()
-                            if ai_reply and len(ai_reply) > 20:
-                                alerts = [block.strip() for block in ai_reply.split("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~") if "🚨" in block]
-                                for clean_alert in alerts:
-                                    if clean_alert:
-                                        await target_channel.send(clean_alert)
-                                        await target_channel.send(" ")  
-                                        print(f"  ✅ FINAL AI ALERT SENT to {alert_name} channel for {ticker}")
-                                        await asyncio.sleep(1.5)
+                        if resp.status_code != 200:
+                            print(f"  Stage 2 API error: {resp.status_code}")
+                            continue
+
+                        data = resp.json()
+                        ai_reply = data["choices"][0]["message"]["content"].strip()
+
+                        print(f"  Stage 2 AI reply length: {len(ai_reply)} | Starts with: {ai_reply[:100]}...")
+
+                        if ai_reply and len(ai_reply) > 20:
+                            alerts = [block.strip() for block in ai_reply.split("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~") if "🚨" in block]
+                            for clean_alert in alerts:
+                                if clean_alert:
+                                    await target_channel.send(clean_alert)
+                                    await target_channel.send(" ")  
+                                    print(f"  ✅ FINAL AI ALERT SENT to {alert_name} channel for {ticker}")
+                                    await asyncio.sleep(1.5)
+                        else:
+                            print("  Stage 2: AI returned no valid alert")
 
                 except Exception as e:
                     print(f"  Stage 2 AI error for {ticker}: {e}")
