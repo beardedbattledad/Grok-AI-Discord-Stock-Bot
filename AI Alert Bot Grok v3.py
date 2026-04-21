@@ -43,9 +43,110 @@ last_alert_time = None
 underlying_move_cache = {}
 seen_trade_keys = set()
 gex_cache = {}  # Global GEX cache to prevent 429s
-system_prompt_stage1 = """"""
+system_prompt_stage1 = """You are a sharp, conservative options flow analyst. 
+Be extremely selective.
 
-system_prompt_stage2 = """[paste your full prompt here including the DARK POOL RULES and GEX RULES sections]"""
+STRICT NO-CHASING RULE:
+- If underlying up > 3% today, do not chase bullish flow (calls). Larger moves = stricter.
+- If underlying down > 3% today, do not chase bearish flow (puts). Larger moves = stricter.
+- No chasing rule can be ignored ONLY if the signal is extremely high elsewhere.
+
+VERY STRICT ETF RULES:
+- Major Index ETFs (SPY, QQQ, etc.): Extremely high bar. Look for either super sudden high volume spikes or longer dated high conviction/extremely high premium on top of higher strictness with other rules.
+
+IV CHANGE AS ASCENDING FILL PROXY:
+- Positive IV change (especially +3% or more) combined with heavy Ask-side volume, sweeps, or high vol/OI often signals aggressive buyers paying up (ascending fills / smart money lifting offers).
+- Negative or flat IV with heavy volume is usually less directional or hedging.
+
+PREMIUM & VOLUME CONVICTION:
+- The higher the total premium, the higher the conviction (larger dollar amount spent = stronger signal).
+- Larger positive IV change + higher premium + larger volume + higher vol/OI = significantly higher conviction.
+
+Other Rules:    
+- Ignore deep ITM (more than 5% ITM). Prefer OTM contracts. ITM/ATM contracts must be very high on other signals for alerts.
+- Larger volume + larger premium + higher vol/OI = higher conviction
+- Prefer new opening positions (volume > OI)
+- Must have multiple signals that confirm good trade likelihood.
+- Prefer directional conviction
+
+For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation.
+
+Use the pre-computed "clean_total_premium" for the Prem: line.
+Use whatever side the trade is on (either Bid or Ask) for the "EXEC_SIDE"
+
+Output exactly in this format (nothing else):
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+🚨🚨🚨🚨🚨🚨
+
+SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
+
+Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | EXEC_SIDE XX%
+
+→ Short explanation here
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If nothing qualifies, output nothing."""
+
+system_prompt_stage2 = """You are a sharp, conservative options flow analyst. 
+Be extremely selective.
+
+STRICT NO-CHASING RULE:
+- If underlying up > 3% today, do not chase bullish flow (calls). Larger moves = stricter.
+- If underlying down > 3% today, do not chase bearish flow (puts). Larger moves = stricter.
+- No chasing rule can be ignored ONLY if the signal is extremely high elsewhere.
+
+VERY STRICT ETF RULES:
+- Major Index ETFs (SPY, QQQ, SOXX, etc.): Extremely high bar. Look for either super sudden high volume spikes or longer dated high conviction/extremely high premium on top of higher strictness with other rules.
+
+IV CHANGE AS ASCENDING FILL PROXY:
+- Positive IV change (especially +3% or more) combined with heavy Ask-side volume, sweeps, or high vol/OI often signals aggressive buyers paying up (ascending fills / smart money lifting offers).
+- Negative or flat IV with heavy volume is usually less directional or hedging.
+
+PREMIUM & VOLUME CONVICTION:
+- The higher the total premium, the higher the conviction (larger dollar amount spent = stronger signal).
+- Larger positive IV change + higher premium + larger volume + higher vol/OI = significantly higher conviction.
+
+DARK POOL RULES:
+- Prints above current price = resistance / sell pressure
+- Prints below current price = support / buy pressure
+- Prints near current price = unknown until significant move
+
+GEX RULES:
+- Positive GEX near strike = dealers sell into strength, buy into weakness
+- Negative GEX near strike = dealers chase the move
+- Closer to current price = stronger effect
+
+Other Rules:    
+- Ignore deep ITM (more than 5% ITM). Prefer OTM contracts. ITM/ATM contracts must be very high on other signals for alerts.
+- The higher the volume the better the trade.
+- Larger volume + larger premium + higher vol/OI = higher conviction
+- Prefer new opening positions (volume > OI)
+- Must have multiple signals that confirm good trade likelihood.
+- Prefer directional conviction
+
+For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation that includes:
+- Why it flagged (volume spike, sweep, opening positions, IV spike, etc.)
+- Possible context (hedging, institutional positioning, insider knowledge, etc.)
+- Trade implication (quick trade vs longer hold)
+
+Use the pre-computed "clean_total_premium" for the Prem: line.
+Use whatever side the trade is on (either Bid or Ask) for the "EXEC_SIDE"
+For "SWEEP/BLOCK" indicate if the trade was a sweep or a block trade. Typically a block if it is not a sweep.
+
+Output exactly in this format (nothing else):
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+🚨🚨🚨🚨🚨🚨
+
+SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
+
+Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | EXEC_SIDE XX%
+
+→ Short explanation here
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If nothing qualifies after full enrichment, output nothing."""
 
 async def load_alert_configs():
     global alert_configs
@@ -331,7 +432,7 @@ def is_market_open():
     hour = now.hour + now.minute / 60.0
     return 9.5 <= hour <= 16.0
 
-@tasks.loop(seconds=45)
+@tasks.loop(seconds=45)  # Slowed down to help with rate limits
 async def auto_alert_scanner():
     print("→ === CUSTOM ALERT SCAN START ===")
 
@@ -352,103 +453,32 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # Strong deduplication
+    # Deduplication
     unique_trades = []
     for trade in triggered:
         key = get_trade_key(trade)
         if key and key not in seen_trade_keys:
             seen_trade_keys.add(key)
             unique_trades.append(trade)
-        else:
-            print(f"  Duplicate skipped early: {key}")
 
     if not unique_trades:
-        print("  All trades were duplicates - nothing new")
+        print("  All trades were duplicates")
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # Enrich every trade with Dark Pool + GEX
-    print(f"  Enriching {len(unique_trades)} trades with Dark Pool + GEX")
+    print(f"  Stage 1: Quick filter on {len(unique_trades)} basic trades")
+
+    # Pre-compute basic fields
     for trade in unique_trades:
         ticker = clean_ticker(trade.get("symbol", ""))
-        if ticker:
-            dark_pools = await get_dark_pool_trades(ticker, limit=300)
-            gex_data = await get_gex_by_strike(ticker)
-            trade["dark_pool_trades"] = dark_pools[:20]
-            trade["gex_by_strike"] = gex_data
-
         premium = calculate_total_premium(trade)
         trade["clean_total_premium"] = premium
-        iv_change = get_iv_change(trade)
-        trade["iv_change"] = iv_change
+        trade["iv_change"] = get_iv_change(trade)
 
-        print(f"  Enriched {ticker} | Premium: ${premium:,}")
+    context_basic = json.dumps(unique_trades, default=str, indent=2)
 
-    context = json.dumps(unique_trades, default=str, indent=2)
-
-    # Use your original prompt
-    system_prompt = """You are a sharp, conservative options flow analyst. 
-Be extremely selective.
-
-STRICT NO-CHASING RULE:
-- If underlying up > 3% today, do not chase bullish flow (calls). Larger moves = stricter.
-- If underlying down > 3% today, do not chase bearish flow (puts). Larger moves = stricter.
-- No chasing rule can be ignored ONLY if the signal is extremely high elsewhere.
-
-VERY STRICT ETF RULES:
-- Major Index ETFs (SPY, QQQ, etc.): Extremely high bar. Look for either super sudden high volume spikes or longer dated high conviction/extremely high premium on top of higher strictness with other rules.
-
-IV CHANGE AS ASCENDING FILL PROXY:
-- Positive IV change (especially +3% or more) combined with heavy Ask-side volume, sweeps, or high vol/OI often signals aggressive buyers paying up (ascending fills / smart money lifting offers).
-- Negative or flat IV with heavy volume is usually less directional or hedging.
-
-PREMIUM & VOLUME CONVICTION:
-- The higher the total premium, the higher the conviction (larger dollar amount spent = stronger signal).
-- Larger positive IV change + higher premium + larger volume + higher vol/OI = significantly higher conviction.
-
-DARK POOL RULES:
-- Prints above current price = resistance / sell pressure
-- Prints below current price = support / buy pressure
-- Prints near current price = unknown until significant move
-
-GEX RULES:
-- Positive GEX near strike = dealers sell into strength, buy into weakness
-- Negative GEX near strike = dealers chase the move
-- Closer to current price = stronger effect
-
-Other Rules:    
-- Ignore deep ITM (more than 5% ITM). Prefer OTM contracts. ITM/ATM contracts must be very high on other signals for alerts.
-- The higher the volume the better the trade.
-- Larger volume + larger premium + higher vol/OI = higher conviction
-- Prefer new opening positions (volume > OI)
-- Must have multiple signals that confirm good trade likelihood.
-- Prefer directional conviction
-
-For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation that includes:
-- Why it flagged (volume spike, sweep, opening positions, IV spike, etc.)
-- Possible context (hedging, institutional positioning, insider knowledge, etc.)
-- Trade implication (quick trade vs longer hold)
-
-Use the pre-computed "clean_total_premium" for the Prem: line.
-Use whatever side the trade is on (either Bid or Ask) for the "EXEC_SIDE"
-For "SWEEP/BLOCK" indicate if the trade was a sweep or a block trade. Typically a block if it is not a sweep.
-
-Output exactly in this format (nothing else):
-
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-🚨🚨🚨🚨🚨🚨
-
-SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
-
-Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | EXEC_SIDE XX%
-
-→ Short explanation here
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-If nothing qualifies, output nothing."""
-
+    # === STAGE 1: Basic filter only ===
     try:
-        print("  Sending full context to Grok")
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
                 "https://api.x.ai/v1/chat/completions",
@@ -456,38 +486,83 @@ If nothing qualifies, output nothing."""
                 json={
                     "model": "grok-4-fast-reasoning",
                     "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Here are the latest unique custom alert trades with full Dark Pool and GEX context:\n{context}\n\nApply all rules strictly. Output only the alerts you like in the exact format, or nothing."}
+                        {"role": "system", "content": system_prompt_stage1},  # your original prompt here
+                        {"role": "user", "content": f"Here are the latest basic custom alert trades:\n{context_basic}\n\nApply all rules strictly. Output ONLY the alerts you like in the exact format, or nothing."}
                     ],
                     "temperature": 0.25,
                     "max_tokens": 2000
                 }
             )
-
-            if resp.status_code != 200:
-                print(f"  Grok API error: {resp.status_code}")
-                print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
-                return
-
             data = resp.json()
-            ai_reply = data["choices"][0]["message"]["content"].strip()
-
-            print(f"  Grok reply length: {len(ai_reply)} | Starts with: {ai_reply[:200]}...")
-
-            if ai_reply and len(ai_reply) > 20:
-                alerts = [block.strip() for block in ai_reply.split("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~") if "🚨" in block]
-                print(f"  Extracted {len(alerts)} alerts with 🚨 marker")
-                for clean_alert in alerts:
-                    if clean_alert:
-                        await channel.send(clean_alert)
-                        await channel.send(" ")  
-                        print(f"  ✅ AI ALERT SENT")
-                        await asyncio.sleep(1.5)
-            else:
-                print("  Grok returned no valid alert")
-
+            ai_reply_stage1 = data["choices"][0]["message"]["content"].strip()
+            print(f"  Stage 1 Grok reply length: {len(ai_reply_stage1)}")
     except Exception as e:
-        print(f"  AI decision error: {e}")
+        print(f"  Stage 1 error: {e}")
+        print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
+        return
+
+    # Extract selected alerts from Stage 1
+    selected_alerts = [block.strip() for block in ai_reply_stage1.split("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~") if "🚨" in block]
+    print(f"  Stage 1 selected {len(selected_alerts)} high-conviction alerts")
+
+    if not selected_alerts:
+        print("  Stage 1: No high-conviction alerts")
+        print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
+        return
+
+    # === STAGE 2: Enrich ONLY the selected alerts ===
+    print(f"  Stage 2: Enriching {len(selected_alerts)} selected alerts with Dark Pool + GEX")
+    for alert_text in selected_alerts:
+        for trade in unique_trades:
+            symbol = trade.get("symbol", "")
+            if symbol and symbol in alert_text:
+                ticker = clean_ticker(symbol)
+
+                # Enrich ONLY these good ones
+                if ticker:
+                    dark_pools = await get_dark_pool_trades(ticker, limit=300)
+                    gex_data = await get_gex_by_strike(ticker)   # cached version
+                    trade["dark_pool_trades"] = dark_pools[:20]
+                    trade["gex_by_strike"] = gex_data
+
+                # Route to correct channel
+                alert_name = trade.get("name") or trade.get("alert_name") or ""
+                target_channel_id = ALERT_CHANNELS.get(alert_name.strip(), ALERT_CHANNEL_ID)
+                target_channel = bot.get_channel(target_channel_id) or channel
+
+                context_full = json.dumps([trade], default=str, indent=2)
+
+                # Final Grok decision with full enriched data
+                try:
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        resp = await client.post(
+                            "https://api.x.ai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {XAI_API_KEY}", "Content-Type": "application/json"},
+                            json={
+                                "model": "grok-4-fast-reasoning",
+                                "messages": [
+                                    {"role": "system", "content": system_prompt_stage2},
+                                    {"role": "user", "content": f"Here is the selected alert with full Dark Pool + GEX:\n{context_full}\n\nRe-evaluate and output in the exact format if it still qualifies."}
+                                ],
+                                "temperature": 0.25,
+                                "max_tokens": 2000
+                            }
+                        )
+                        data = resp.json()
+                        ai_reply = data["choices"][0]["message"]["content"].strip()
+
+                        print(f"  Stage 2 reply length for {ticker}: {len(ai_reply)}")
+
+                        alerts = [block.strip() for block in ai_reply.split("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~") if "🚨" in block]
+                        for clean_alert in alerts:
+                            if clean_alert:
+                                await target_channel.send(clean_alert)
+                                await target_channel.send(" ")
+                                print(f"  ✅ FINAL ALERT SENT for {ticker}")
+                                await asyncio.sleep(1.5)
+                except Exception as e:
+                    print(f"  Stage 2 error for {ticker}: {e}")
+                break
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
