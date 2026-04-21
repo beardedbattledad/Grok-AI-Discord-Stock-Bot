@@ -340,6 +340,7 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
+    # Strong deduplication
     unique_trades = []
     for trade in triggered:
         key = get_trade_key(trade)
@@ -354,128 +355,27 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # STAGE 1: Quick filter with basic data only
-    print("  Stage 1: Quick filter with basic data")
+    # Enrich every trade with Dark Pool + GEX
+    print(f"  Enriching {len(unique_trades)} trades with Dark Pool + GEX")
     for trade in unique_trades:
+        ticker = clean_ticker(trade.get("symbol", ""))
+        if ticker:
+            dark_pools = await get_dark_pool_trades(ticker, limit=300)
+            gex_data = await get_gex_by_strike(ticker)
+            trade["dark_pool_trades"] = dark_pools[:20]
+            trade["gex_by_strike"] = gex_data
+
         premium = calculate_total_premium(trade)
         trade["clean_total_premium"] = premium
         iv_change = get_iv_change(trade)
         trade["iv_change"] = iv_change
 
-    context_basic = json.dumps(unique_trades, default=str, indent=2)
+        print(f"  Enriched {ticker} | Premium: ${premium:,}")
 
-    system_prompt_stage1 = """You are a sharp, conservative options flow analyst. 
-Be extremely selective.
+    context = json.dumps(unique_trades, default=str, indent=2)
 
-STRICT NO-CHASING RULE:
-- If underlying up > 3% today, do not chase bullish flow (calls). Larger moves = stricter.
-- If underlying down > 3% today, do not chase bearish flow (puts). Larger moves = stricter.
-- No chasing rule can be ignored ONLY if the signal is extremely high elsewhere.
-
-VERY STRICT ETF RULES:
-- Major Index ETFs (SPY, QQQ, etc.): Extremely high bar. Look for either super sudden high volume spikes or longer dated high conviction/extremely high premium on top of higher strictness with other rules.
-
-IV CHANGE AS ASCENDING FILL PROXY:
-- Positive IV change (especially +3% or more) combined with heavy Ask-side volume, sweeps, or high vol/OI often signals aggressive buyers paying up (ascending fills / smart money lifting offers).
-- Negative or flat IV with heavy volume is usually less directional or hedging.
-
-PREMIUM & VOLUME CONVICTION:
-- The higher the total premium, the higher the conviction (larger dollar amount spent = stronger signal).
-- Larger positive IV change + higher premium + larger volume + higher vol/OI = significantly higher conviction.
-
-Other Rules:    
-- Ignore deep ITM (more than 5% ITM). Prefer OTM contracts. ITM/ATM contracts must be very high on other signals for alerts.
-- The higher the volume the better the trade.
-- Larger volume + larger premium + higher vol/OI = higher conviction
-- Prefer new opening positions (volume > OI)
-- Must have multiple signals that confirm good trade likelihood.
-- Prefer directional conviction
-
-For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation that includes:
-- Why it flagged (volume spike, sweep, opening positions, IV spike, etc.)
-- Possible context (hedging, institutional positioning, insider knowledge, etc.)
-- Trade implication (quick trade vs longer hold)
-
-Use the pre-computed "clean_total_premium" for the Prem: line.
-Use whatever side the trade is on (either Bid or Ask) for the "EXEC_SIDE"
-For "SWEEP/BLOCK" indicate if the trade was a sweep or a block trade. Typically a block if it is not a sweep.
-
-Output exactly in this format (nothing else):
-
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-🚨🚨🚨🚨🚨🚨
-
-SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
-
-Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | EXEC_SIDE XX%
-
-→ Short explanation here
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-If nothing qualifies, output nothing."""
-
-    selected_alerts = []
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                "https://api.x.ai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {XAI_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": "grok-4-fast-reasoning",
-                    "messages": [
-                        {"role": "system", "content": system_prompt_stage1},
-                        {"role": "user", "content": f"Here are the latest unique custom alert trades:\n{context_basic}\n\nApply all rules strictly. Output only the alerts you like in the exact format, or nothing."}
-                    ],
-                    "temperature": 0.25,
-                    "max_tokens": 2000
-                }
-            )
-
-            if resp.status_code != 200:
-                print(f"  Stage 1 API error: {resp.status_code}")
-                print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
-                return
-
-            data = resp.json()
-            ai_reply = data["choices"][0]["message"]["content"].strip()
-
-            if not ai_reply or "nothing" in ai_reply.lower() or len(ai_reply) < 30:
-                print("  Stage 1: AI decided no high-conviction alerts")
-                print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
-                return
-
-            selected_alerts = [block.strip() for block in ai_reply.split("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~") if "🚨" in block]
-
-    except Exception as e:
-        print(f"  Stage 1 AI error: {e}")
-        print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
-        return
-
-                # STAGE 2: Enrich only selected alerts with Dark Pool + GEX, then finalize
-    print(f"  Stage 2: Enriching {len(selected_alerts)} selected alerts with Dark Pool + GEX")
-
-    for alert_text in selected_alerts:
-        for trade in unique_trades:
-            symbol = trade.get("symbol", "")
-            if symbol and symbol in alert_text:
-                ticker = clean_ticker(symbol)
-                if ticker:
-                    dark_pools = await get_dark_pool_trades(ticker, limit=300)
-                    gex_data = await get_gex_by_strike(ticker)
-                    trade["dark_pool_trades"] = dark_pools[:20]
-                    trade["gex_by_strike"] = gex_data
-
-                # Route to correct channel
-                alert_name = trade.get("name") or trade.get("alert_name") or ""
-                channel_id = ALERT_CHANNELS.get(alert_name.strip(), ALERT_CHANNEL_ID)
-                target_channel = bot.get_channel(channel_id)
-                if not target_channel:
-                    target_channel = bot.get_channel(ALERT_CHANNEL_ID)
-
-                # Final Grok call with full context
-                context_full = json.dumps([trade], default=str, indent=2)
-
-                system_prompt_stage2 = """You are a sharp, conservative options flow analyst. 
+    # Use your original prompt
+    system_prompt = """You are a sharp, conservative options flow analyst. 
 Be extremely selective.
 
 STRICT NO-CHASING RULE:
@@ -535,51 +435,47 @@ Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | E
 
 If nothing qualifies, output nothing."""
 
-                try:
-                    print(f"  Stage 2: Sending full context to Grok for {ticker}")
-                    async with httpx.AsyncClient(timeout=60.0) as client:
-                        resp = await client.post(
-                            "https://api.x.ai/v1/chat/completions",
-                            headers={"Authorization": f"Bearer {XAI_API_KEY}", "Content-Type": "application/json"},
-                            json={
-                                "model": "grok-4-fast-reasoning",
-                                "messages": [
-                                    {"role": "system", "content": system_prompt_stage2},
-                                    {"role": "user", "content": f"Here is the selected high-conviction alert with full Dark Pool and GEX context:\n{context_full}\n\nRe-evaluate with the new Dark Pool and GEX data. You MUST output the alert in the exact format above. Do not say 'nothing' unless you truly see no value at all."}
-                                ],
-                                "temperature": 0.25,
-                                "max_tokens": 2000
-                            }
-                        )
+    try:
+        print("  Sending full context to Grok")
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "https://api.x.ai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {XAI_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": "grok-4-fast-reasoning",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Here are the latest unique custom alert trades with full Dark Pool and GEX context:\n{context}\n\nApply all rules strictly. Output only the alerts you like in the exact format, or nothing."}
+                    ],
+                    "temperature": 0.25,
+                    "max_tokens": 2000
+                }
+            )
 
-                        if resp.status_code != 200:
-                            print(f"  Stage 2 API error: {resp.status_code}")
-                            continue
+            if resp.status_code != 200:
+                print(f"  Grok API error: {resp.status_code}")
+                print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
+                return
 
-                        data = resp.json()
-                        ai_reply = data["choices"][0]["message"]["content"].strip()
+            data = resp.json()
+            ai_reply = data["choices"][0]["message"]["content"].strip()
 
-                        print(f"  Stage 2 AI reply length: {len(ai_reply)} | Starts with: {ai_reply[:200]}...")
+            print(f"  Grok reply length: {len(ai_reply)} | Starts with: {ai_reply[:200]}...")
 
-                        if ai_reply and len(ai_reply) > 20:
-                            alerts = [block.strip() for block in ai_reply.split("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~") if "🚨" in block]
-                            print(f"  Stage 2 extracted {len(alerts)} alerts with 🚨 marker")
-                            for clean_alert in alerts:
-                                if clean_alert:
-                                    await target_channel.send(clean_alert)
-                                    await target_channel.send(" ")  
-                                    print(f"  ✅ FINAL AI ALERT SENT to {alert_name} channel for {ticker}")
-                                    await asyncio.sleep(1.5)
-                        else:
-                            print("  Stage 2: AI returned no valid alert (no 🚨 or too short)")
-                            # Fallback: send the raw reply so we can see what Grok actually said
-                            if ai_reply:
-                                await target_channel.send(ai_reply[:1900])
-                                print("  ⚠️ Fallback: sent raw AI reply")
+            if ai_reply and len(ai_reply) > 20:
+                alerts = [block.strip() for block in ai_reply.split("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~") if "🚨" in block]
+                print(f"  Extracted {len(alerts)} alerts with 🚨 marker")
+                for clean_alert in alerts:
+                    if clean_alert:
+                        await channel.send(clean_alert)
+                        await channel.send(" ")  
+                        print(f"  ✅ AI ALERT SENT")
+                        await asyncio.sleep(1.5)
+            else:
+                print("  Grok returned no valid alert")
 
-                except Exception as e:
-                    print(f"  Stage 2 AI error for {ticker}: {e}")
-                break   # Move to next selected alert
+    except Exception as e:
+        print(f"  AI decision error: {e}")
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
