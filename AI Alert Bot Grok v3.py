@@ -155,19 +155,27 @@ async def get_dark_pool_trades(ticker=None, limit=300):
         print(f"Dark pool fetch error: {e}")
         return []
 
-async def get_gex_by_strike(ticker):
+async def get_gex_by_strike(ticker: str):
     try:
         headers = {"Authorization": f"Bearer {UW_API_KEY}"}
-        url = f"https://api.unusualwhales.com/api/stock/{ticker.upper()}/gamma-exposure"
+        url = f"https://api.unusualwhales.com/api/stock/{ticker.upper()}/greek-exposure"
+        
+        print(f"→ GEX API call for {ticker.upper()} → {url}")
+        
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(url, headers=headers)
-            print(f"→ GEX API Status: {resp.status_code} for {ticker}")
+            print(f"→ GEX API Status: {resp.status_code} for {ticker.upper()}")
+            
             if resp.status_code == 200:
                 data = resp.json()
-                return data.get("data", [])
-            return []
+                # Return the raw data (it usually contains gamma exposure per strike etc.)
+                return data.get("data", data) if isinstance(data, dict) else data
+            else:
+                print(f"  GEX API error response: {resp.text[:300]}")
+                return []
+                
     except Exception as e:
-        print(f"GEX fetch error: {e}")
+        print(f"  GEX API exception for {ticker}: {e}")
         return []
 
 def parse_option_symbol(symbol):
