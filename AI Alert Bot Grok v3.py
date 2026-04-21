@@ -125,9 +125,11 @@ Other Rules:
 - Must have multiple signals that confirm good trade likelihood.
 - Prefer directional conviction
 
-For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation that includes:
+For each alert you choose, assign Conviction: High / Medium / Exceptional and write a **detailed but concise** 2-4 sentence explanation that includes:
 - Why it flagged (volume spike, sweep, opening positions, IV spike, etc.)
-- Possible context (hedging, institutional positioning, insider knowledge, etc.)
+- Specific Dark Pool context: mention key prints (above/below/near current price) and what they likely mean (support/resistance, buy/sell pressure)
+- Specific GEX context: mention near current stock price and largest gamma levels and whether they suggest dealer suppressing moves or amplying moves
+- Possible broader context (hedging, institutional positioning, insider knowledge, etc.)
 - Trade implication (quick trade vs longer hold)
 
 Use the pre-computed "clean_total_premium" for the Prem: line.
