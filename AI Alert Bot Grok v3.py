@@ -28,6 +28,7 @@ ALERT_CHANNELS = {
     "AI Mid Cap": 1495063667924799660,  # Mid Cap Alerts
     "AI Small Cap": 1495063712212451509 # Small Cap Alerts
 }
+ALERT_CHANNEL_ID = 1490357987154460862   # Main fallback channel
 
 intents = discord.Intents.default()
 intents.message_content = True
