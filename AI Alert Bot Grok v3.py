@@ -475,7 +475,7 @@ If nothing qualifies, output nothing."""
                 # Final Grok call with full context
                 context_full = json.dumps([trade], default=str, indent=2)
 
-            # STAGE 2: Enrich only selected alerts with Dark Pool + GEX
+                # STAGE 2: Enrich only selected alerts with Dark Pool + GEX, then finalize
     print(f"  Stage 2: Enriching {len(selected_alerts)} selected alerts with Dark Pool + GEX")
 
     for alert_text in selected_alerts:
@@ -496,7 +496,7 @@ If nothing qualifies, output nothing."""
                 if not target_channel:
                     target_channel = bot.get_channel(ALERT_CHANNEL_ID)
 
-                                # Final Grok call with full context
+                # Final Grok call with full context
                 context_full = json.dumps([trade], default=str, indent=2)
 
                 system_prompt_stage2 = """You are a sharp, conservative options flow analyst. 
@@ -568,7 +568,7 @@ If nothing qualifies, output nothing."""
                                 "model": "grok-4-fast-reasoning",
                                 "messages": [
                                     {"role": "system", "content": system_prompt_stage2},
-                                    {"role": "user", "content": f"Here is the selected high-conviction alert with full Dark Pool and GEX context:\n{context_full}\n\nRe-evaluate with the new Dark Pool and GEX data. Output only the final alert in the exact format. Do not output 'nothing' unless you truly see no value."}
+                                    {"role": "user", "content": f"Here is the selected high-conviction alert with full Dark Pool and GEX context:\n{context_full}\n\nRe-evaluate with the new Dark Pool and GEX data. You MUST output the alert in the exact format above. Do not say 'nothing' unless you truly see no value at all."}
                                 ],
                                 "temperature": 0.25,
                                 "max_tokens": 2000
@@ -582,7 +582,7 @@ If nothing qualifies, output nothing."""
                         data = resp.json()
                         ai_reply = data["choices"][0]["message"]["content"].strip()
 
-                        print(f"  Stage 2 AI reply length: {len(ai_reply)} | Starts with: {ai_reply[:150]}...")
+                        print(f"  Stage 2 AI reply length: {len(ai_reply)} | Starts with: {ai_reply[:200]}...")
 
                         if ai_reply and len(ai_reply) > 20:
                             alerts = [block.strip() for block in ai_reply.split("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~") if "🚨" in block]
