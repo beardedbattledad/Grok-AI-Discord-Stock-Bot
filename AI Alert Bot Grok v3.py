@@ -451,31 +451,7 @@ If nothing qualifies, output nothing."""
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # STAGE 2: Enrich only selected alerts with Dark Pool + GEX, then send to correct channel
-    print(f"  Stage 2: Enriching {len(selected_alerts)} selected alerts with Dark Pool + GEX")
-
-    for alert_text in selected_alerts:
-        for trade in unique_trades:
-            symbol = trade.get("symbol", "")
-            if symbol and symbol in alert_text:
-                ticker = clean_ticker(symbol)
-                if ticker:
-                    dark_pools = await get_dark_pool_trades(ticker, limit=300)
-                    gex_data = await get_gex_by_strike(ticker)
-                    trade["dark_pool_trades"] = dark_pools[:20]
-                    trade["gex_by_strike"] = gex_data
-
-                # Route to correct channel
-                alert_name = trade.get("name") or trade.get("alert_name") or ""
-                channel_id = ALERT_CHANNELS.get(alert_name.strip(), ALERT_CHANNEL_ID)
-                target_channel = bot.get_channel(channel_id)
-                if not target_channel:
-                    target_channel = bot.get_channel(ALERT_CHANNEL_ID)
-
-                # Final Grok call with full context
-                context_full = json.dumps([trade], default=str, indent=2)
-
-                # STAGE 2: Enrich only selected alerts with Dark Pool + GEX, then finalize
+        # STAGE 2: Enrich only selected alerts with Dark Pool + GEX, then finalize
     print(f"  Stage 2: Enriching {len(selected_alerts)} selected alerts with Dark Pool + GEX")
 
     for alert_text in selected_alerts:
@@ -536,10 +512,7 @@ Other Rules:
 - Must have multiple signals that confirm good trade likelihood.
 - Prefer directional conviction
 
-For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation that includes:
-- Why it flagged (volume spike, sweep, opening positions, IV spike, etc.)
-- Possible context (hedging, institutional positioning, insider knowledge, etc.)
-- Trade implication (quick trade vs longer hold)
+For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation.
 
 Use the pre-computed "clean_total_premium" for the Prem: line.
 Use whatever side the trade is on (either Bid or Ask) for the "EXEC_SIDE"
@@ -560,6 +533,7 @@ Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | E
 If nothing qualifies, output nothing."""
 
                 try:
+                    print(f"  Stage 2: Sending full context to Grok for {ticker}")
                     async with httpx.AsyncClient(timeout=60.0) as client:
                         resp = await client.post(
                             "https://api.x.ai/v1/chat/completions",
@@ -568,7 +542,7 @@ If nothing qualifies, output nothing."""
                                 "model": "grok-4-fast-reasoning",
                                 "messages": [
                                     {"role": "system", "content": system_prompt_stage2},
-                                    {"role": "user", "content": f"Here is the selected high-conviction alert with full Dark Pool and GEX context:\n{context_full}\n\nRe-evaluate with the new Dark Pool and GEX data. You MUST output the alert in the exact format above. Do not say 'nothing' unless you truly see no value at all."}
+                                    {"role": "user", "content": f"Here is the selected high-conviction alert with full Dark Pool and GEX context:\n{context_full}\n\nRe-evaluate with the new Dark Pool and GEX data. Output only the final alert in the exact format."}
                                 ],
                                 "temperature": 0.25,
                                 "max_tokens": 2000
@@ -594,7 +568,7 @@ If nothing qualifies, output nothing."""
                                     print(f"  ✅ FINAL AI ALERT SENT to {alert_name} channel for {ticker}")
                                     await asyncio.sleep(1.5)
                         else:
-                            print("  Stage 2: AI returned no valid alert (no 🚨 or too short)")
+                            print("  Stage 2: AI returned no valid alert")
 
                 except Exception as e:
                     print(f"  Stage 2 AI error for {ticker}: {e}")
