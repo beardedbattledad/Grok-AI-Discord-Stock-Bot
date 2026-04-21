@@ -42,6 +42,10 @@ alert_configs = {}
 last_alert_time = None
 underlying_move_cache = {}
 seen_trade_keys = set()
+gex_cache = {}  # Global GEX cache to prevent 429s
+system_prompt_stage1 = """"""
+
+system_prompt_stage2 = """[paste your full prompt here including the DARK POOL RULES and GEX RULES sections]"""
 
 async def load_alert_configs():
     global alert_configs
