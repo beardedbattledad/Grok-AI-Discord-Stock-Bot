@@ -617,7 +617,7 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # STAGE 1: Quick filter with basic data only
+    # STAGE 1: Quick filter using your original rules (basic data only)
     print("  Stage 1: Quick filter with basic data")
     for trade in unique_trades:
         premium = calculate_total_premium(trade)
@@ -627,8 +627,8 @@ async def auto_alert_scanner():
 
     context_basic = json.dumps(unique_trades, default=str, indent=2)
 
-    # Define Stage 1 prompt (quick filter)
-    system_prompt_stage1 = system_prompt = """You are a sharp, conservative options flow analyst. 
+    # Use YOUR original system prompt for Stage 1 (unchanged)
+    system_prompt_stage1 = """You are a sharp, conservative options flow analyst. 
 Be extremely selective.
 
 STRICT NO-CHASING RULE:
@@ -649,15 +649,20 @@ PREMIUM & VOLUME CONVICTION:
 
 Other Rules:    
 - Ignore deep ITM (more than 5% ITM). Prefer OTM contracts. ITM/ATM contracts must be very high on other signals for alerts.
+- The higher the volume the better the trade.
 - Larger volume + larger premium + higher vol/OI = higher conviction
 - Prefer new opening positions (volume > OI)
 - Must have multiple signals that confirm good trade likelihood.
 - Prefer directional conviction
 
-For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation.
+For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation that includes:
+- Why it flagged (volume spike, sweep, opening positions, IV spike, etc.)
+- Possible context (hedging, institutional positioning, insider knowledge, etc.)
+- Trade implication (quick trade vs longer hold)
 
 Use the pre-computed "clean_total_premium" for the Prem: line.
 Use whatever side the trade is on (either Bid or Ask) for the "EXEC_SIDE"
+For "SWEEP/BLOCK" indicate if the trade was a sweep or a block trade. Typically a block if it is not a sweep.
 
 Output exactly in this format (nothing else):
 
@@ -673,6 +678,7 @@ Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | E
 
 If nothing qualifies, output nothing."""
 
+    selected_alerts = []
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
@@ -702,7 +708,7 @@ If nothing qualifies, output nothing."""
                 print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
                 return
 
-            # Extract selected alerts
+            # Extract the alerts Grok liked in Stage 1
             selected_alerts = [block.strip() for block in ai_reply.split("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~") if "🚨" in block]
 
     except Exception as e:
@@ -710,7 +716,7 @@ If nothing qualifies, output nothing."""
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # STAGE 2: Enrich only selected alerts with Dark Pool + GEX
+    # STAGE 2: Enrich only the selected alerts with Dark Pool + GEX, then finalize
     print(f"  Stage 2: Enriching {len(selected_alerts)} selected alerts with Dark Pool + GEX")
 
     enriched_trades = []
@@ -734,33 +740,8 @@ If nothing qualifies, output nothing."""
 
     context_full = json.dumps(enriched_trades, default=str, indent=2)
 
-    # Final prompt with full context
-    system_prompt_stage2 = """You are a sharp options flow analyst with full smart-money context.
-Now that you have Dark Pool prints and GEX data, re-evaluate the selected alerts using all rules plus:
-
-DARK POOL RULES:
-- Prints above current price = resistance / sell pressure
-- Prints below current price = support / buy pressure
-- Prints near current price = unknown until significant move
-
-GEX RULES:
-- Positive GEX near strike = dealers sell into strength, buy into weakness
-- Negative GEX near strike = dealers chase the move
-- Closer to current price = stronger effect
-
-Use the pre-computed clean_total_premium, etc.
-
-Output exactly in this format (nothing else):
-
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-🚨🚨🚨🚨🚨🚨
-
-SYMBOL $STRIKE EXPIRY TYPE | SIDE | Conviction: XXX
-
-Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | EXEC_SIDE XX%
-
-→ Short explanation here
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"""
+    # Use your original detailed prompt for the final output (Stage 2)
+    system_prompt_stage2 = system_prompt_stage1   # Reuse your full prompt for consistency
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -771,7 +752,7 @@ Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | E
                     "model": "grok-4-fast-reasoning",
                     "messages": [
                         {"role": "system", "content": system_prompt_stage2},
-                        {"role": "user", "content": f"Here are the selected high-conviction alerts with full Dark Pool and GEX context:\n{context_full}\n\nOutput only the final alerts in the exact format."}
+                        {"role": "user", "content": f"Here are the selected high-conviction alerts with full Dark Pool and GEX context:\n{context_full}\n\nRe-evaluate with the new Dark Pool and GEX data. Output only the final alerts in the exact format."}
                     ],
                     "temperature": 0.25,
                     "max_tokens": 2000
@@ -799,7 +780,6 @@ Prem:$PREMIUM | Vol:VOL | Avg Fill:$AVG | OI:OI | Vol/OI:RATIO | SWEEP/BLOCK | E
         print(f"  Stage 2 AI error: {e}")
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
-
 # ==================== CONVERSATIONAL MODE ====================
 @bot.event
 async def on_message(message: discord.Message):
