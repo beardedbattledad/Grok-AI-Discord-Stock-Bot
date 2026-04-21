@@ -474,8 +474,31 @@ If nothing qualifies, output nothing."""
                 # Final Grok call with full context
                 context_full = json.dumps([trade], default=str, indent=2)
 
-                    # Stage 2 prompt: Use your original prompt + Dark Pool / GEX interpretation
-    system_prompt_stage2 = """You are a sharp, conservative options flow analyst. 
+    # STAGE 2: Enrich only selected alerts with Dark Pool + GEX, then finalize
+    print(f"  Stage 2: Enriching {len(selected_alerts)} selected alerts with Dark Pool + GEX")
+
+    for alert_text in selected_alerts:
+        for trade in unique_trades:
+            symbol = trade.get("symbol", "")
+            if symbol and symbol in alert_text:
+                ticker = clean_ticker(symbol)
+                if ticker:
+                    dark_pools = await get_dark_pool_trades(ticker, limit=300)
+                    gex_data = await get_gex_by_strike(ticker)
+                    trade["dark_pool_trades"] = dark_pools[:20]
+                    trade["gex_by_strike"] = gex_data
+
+                # Route to correct channel
+                alert_name = trade.get("name") or trade.get("alert_name") or ""
+                channel_id = ALERT_CHANNELS.get(alert_name.strip(), ALERT_CHANNEL_ID)
+                target_channel = bot.get_channel(channel_id)
+                if not target_channel:
+                    target_channel = bot.get_channel(ALERT_CHANNEL_ID)
+
+                # Final Grok call with full context for this alert
+                context_full = json.dumps([trade], default=str, indent=2)
+
+                system_prompt_stage2 = """You are a sharp, conservative options flow analyst. 
 Be extremely selective.
 
 STRICT NO-CHASING RULE:
@@ -565,7 +588,7 @@ If nothing qualifies, output nothing."""
 
                 except Exception as e:
                     print(f"  Stage 2 AI error for {ticker}: {e}")
-                break
+                break   # Move to next selected alert
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
