@@ -451,7 +451,7 @@ If nothing qualifies, output nothing."""
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-        # STAGE 2: Enrich only selected alerts with Dark Pool + GEX, then finalize
+            # STAGE 2: Enrich only selected alerts with Dark Pool + GEX, then finalize
     print(f"  Stage 2: Enriching {len(selected_alerts)} selected alerts with Dark Pool + GEX")
 
     for alert_text in selected_alerts:
