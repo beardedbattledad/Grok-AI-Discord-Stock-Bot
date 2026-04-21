@@ -510,29 +510,36 @@ async def auto_alert_scanner():
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-    # === STAGE 2: Enrich ONLY the selected alerts ===
+        # === STAGE 2: Enrich ONLY the selected alerts (with full logging) ===
     print(f"  Stage 2: Enriching {len(selected_alerts)} selected alerts with Dark Pool + GEX")
-    for alert_text in selected_alerts:
-        for trade in unique_trades:
-            symbol = trade.get("symbol", "")
-            if symbol and symbol in alert_text:
-                ticker = clean_ticker(symbol)
 
-                # Enrich ONLY these good ones
-                if ticker:
-                    dark_pools = await get_dark_pool_trades(ticker, limit=300)
-                    gex_data = await get_gex_by_strike(ticker)   # cached version
-                    trade["dark_pool_trades"] = dark_pools[:20]
-                    trade["gex_by_strike"] = gex_data
+    for i, alert_text in enumerate(selected_alerts):
+        print(f"    Stage 2 Alert #{i+1} text preview: {alert_text[:150]}...")
+
+        # Find the matching trade using ticker (much more reliable than full symbol)
+        matched = False
+        for trade in unique_trades:
+            ticker = clean_ticker(trade.get("symbol", ""))
+            if ticker and ticker in alert_text.upper():
+                print(f"    ✅ Matched trade for ticker {ticker}")
+                matched = True
+
+                # Enrich with Dark Pool + GEX
+                dark_pools = await get_dark_pool_trades(ticker, limit=300)
+                gex_data = await get_gex_by_strike(ticker)
+                trade["dark_pool_trades"] = dark_pools[:20]
+                trade["gex_by_strike"] = gex_data
 
                 # Route to correct channel
                 alert_name = trade.get("name") or trade.get("alert_name") or ""
                 target_channel_id = ALERT_CHANNELS.get(alert_name.strip(), ALERT_CHANNEL_ID)
                 target_channel = bot.get_channel(target_channel_id) or channel
 
+                # Full context for Grok
                 context_full = json.dumps([trade], default=str, indent=2)
+                print(f"    Stage 2: Sending enriched data to Grok for {ticker} (context length: {len(context_full)} chars)")
 
-                # Final Grok decision with full enriched data
+                # Final Grok call
                 try:
                     async with httpx.AsyncClient(timeout=60.0) as client:
                         resp = await client.post(
@@ -542,27 +549,39 @@ async def auto_alert_scanner():
                                 "model": "grok-4-fast-reasoning",
                                 "messages": [
                                     {"role": "system", "content": system_prompt_stage2},
-                                    {"role": "user", "content": f"Here is the selected alert with full Dark Pool + GEX:\n{context_full}\n\nRe-evaluate and output in the exact format if it still qualifies."}
+                                    {"role": "user", "content": f"Here is the selected high-conviction alert with full Dark Pool + GEX context:\n{context_full}\n\nRe-evaluate and output in the exact format if it still qualifies."}
                                 ],
                                 "temperature": 0.25,
                                 "max_tokens": 2000
                             }
                         )
+
                         data = resp.json()
                         ai_reply = data["choices"][0]["message"]["content"].strip()
 
-                        print(f"  Stage 2 reply length for {ticker}: {len(ai_reply)}")
+                        print(f"    Stage 2 Grok reply length for {ticker}: {len(ai_reply)} | Starts with: {ai_reply[:200]}...")
 
                         alerts = [block.strip() for block in ai_reply.split("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~") if "🚨" in block]
+                        print(f"    Stage 2 extracted {len(alerts)} formatted alerts")
+
                         for clean_alert in alerts:
                             if clean_alert:
                                 await target_channel.send(clean_alert)
                                 await target_channel.send(" ")
-                                print(f"  ✅ FINAL ALERT SENT for {ticker}")
+                                print(f"    ✅ FINAL AI ALERT SENT for {ticker}")
                                 await asyncio.sleep(1.5)
+
+                        # Fallback: if Grok didn't use our format, still show us what it said
+                        if not alerts and ai_reply:
+                            await target_channel.send("**Raw Stage 2 reply (debug):**")
+                            await target_channel.send(ai_reply[:1900])
+
                 except Exception as e:
-                    print(f"  Stage 2 error for {ticker}: {e}")
-                break
+                    print(f"    Stage 2 EXCEPTION for {ticker}: {e}")
+                break   # We found the matching trade, move to next alert
+
+        if not matched:
+            print(f"    ❌ No trade matched for alert text (ticker not found)")
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
