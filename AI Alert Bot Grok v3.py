@@ -451,7 +451,7 @@ If nothing qualifies, output nothing."""
         print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
         return
 
-            # STAGE 2: Enrich only selected alerts with Dark Pool + GEX, then finalize
+                # STAGE 2: Enrich only selected alerts with Dark Pool + GEX, then finalize
     print(f"  Stage 2: Enriching {len(selected_alerts)} selected alerts with Dark Pool + GEX")
 
     for alert_text in selected_alerts:
@@ -512,7 +512,10 @@ Other Rules:
 - Must have multiple signals that confirm good trade likelihood.
 - Prefer directional conviction
 
-For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation.
+For each alert you choose, assign Conviction: High / Medium / Exceptional and write a short but informative 1-2 sentence explanation that includes:
+- Why it flagged (volume spike, sweep, opening positions, IV spike, etc.)
+- Possible context (hedging, institutional positioning, insider knowledge, etc.)
+- Trade implication (quick trade vs longer hold)
 
 Use the pre-computed "clean_total_premium" for the Prem: line.
 Use whatever side the trade is on (either Bid or Ask) for the "EXEC_SIDE"
@@ -542,7 +545,7 @@ If nothing qualifies, output nothing."""
                                 "model": "grok-4-fast-reasoning",
                                 "messages": [
                                     {"role": "system", "content": system_prompt_stage2},
-                                    {"role": "user", "content": f"Here is the selected high-conviction alert with full Dark Pool and GEX context:\n{context_full}\n\nRe-evaluate with the new Dark Pool and GEX data. Output only the final alert in the exact format."}
+                                    {"role": "user", "content": f"Here is the selected high-conviction alert with full Dark Pool and GEX context:\n{context_full}\n\nRe-evaluate with the new Dark Pool and GEX data. You MUST output the alert in the exact format above. Do not say 'nothing' unless you truly see no value at all."}
                                 ],
                                 "temperature": 0.25,
                                 "max_tokens": 2000
@@ -568,11 +571,15 @@ If nothing qualifies, output nothing."""
                                     print(f"  ✅ FINAL AI ALERT SENT to {alert_name} channel for {ticker}")
                                     await asyncio.sleep(1.5)
                         else:
-                            print("  Stage 2: AI returned no valid alert")
+                            print("  Stage 2: AI returned no valid alert (no 🚨 or too short)")
+                            # Fallback: send the raw reply so we can see what Grok actually said
+                            if ai_reply:
+                                await target_channel.send(ai_reply[:1900])
+                                print("  ⚠️ Fallback: sent raw AI reply")
 
                 except Exception as e:
                     print(f"  Stage 2 AI error for {ticker}: {e}")
-                break
+                break   # Move to next selected alert
 
     print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
 
