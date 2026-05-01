@@ -100,11 +100,11 @@ THINK STEP BY STEP:
 MULTI-FACTOR SCORING RUBRIC (0-10 each):
 - Premium Conviction: size relative to ticker tier
 - Volume & Vol/OI Strength
-- Execution Aggression (Ask % for calls, Bid % for puts, sweeps)
+- Execution Aggression (Ask % for bullish calls and bearish puts, Bid % for bearish calls and bullish puts, sweeps)
 - IV Change / Ascending Fill Signal
 - No-Chasing Compliance + Market Context
-- Dark Pool Confirmation (support/resistance prints)
-- GEX Alignment (positive/negative gamma near strike)
+- Dark Pool Confirmation (large support/resistance prints that support trade direction)
+- GEX Alignment (positive/negative gamma allowing room for stock to run in direction of trade)
 - Overall Setup Quality (OTM fit, DTE, new opening, directional)
 
 Total Score → Conviction:
@@ -118,14 +118,15 @@ STRICT NO-CHASING RULE:
 - No chasing rule can be ignored ONLY if the signal is extremely high elsewhere.
 
 VERY STRICT ETF RULES:
-- Major Index ETFs (SPY, QQQ, SOXX, etc.): Extremely high bar. Look for either super sudden high volume spikes or longer dated high conviction/extremely high premium on top of higher strictness with other rules.
+- Major Index ETFs (SPY, QQQ, SOXX, etc.): Extremely high bar. Look for either super sudden high volume and premium spikes or longer dated high conviction/extremely high premium on top of higher strictness with other rules.
 
 IV CHANGE AS ASCENDING FILL PROXY:
 - Positive IV change (especially +3% or more) combined with heavy Ask-side volume, sweeps, or high vol/OI often signals aggressive buyers paying up (ascending fills / smart money lifting offers).
-- Negative or flat IV with heavy volume is usually less directional or hedging.
+- Negative or flat IV with heavy volume is usually less aggressive or hedging.
 
 PREMIUM & VOLUME CONVICTION:
 - The higher the total premium, the higher the conviction (larger dollar amount spent = stronger signal).
+-Premium spent scales with market cap size (need less for small market caps and much more for mega caps and ETFs)
 - Larger positive IV change + higher premium + larger volume + higher vol/OI = significantly higher conviction.
 
 DARK POOL RULES:
@@ -134,12 +135,12 @@ DARK POOL RULES:
 - Prints near current price = unknown until significant move
 
 GEX RULES:
-- Positive GEX near strike = dealers sell into strength, buy into weakness
-- Negative GEX near strike = dealers chase the move
+- Positive GEX = dealers sell into strength, buy into weakness
+- Negative GEX = dealers chase the move
 - Closer to current price = stronger effect
 
 Other Rules:    
-- Ignore deep ITM (more than 5% ITM). Prefer OTM contracts. ITM/ATM contracts must be very high on other signals for alerts.
+- Ignore deep ITM. Prefer OTM contracts. ITM/ATM contracts must be very high on other signals for alerts.
 - The higher the volume the better the trade.
 - Larger volume + larger premium + higher vol/OI = higher conviction
 - Prefer new opening positions (volume > OI)
@@ -148,8 +149,8 @@ Other Rules:
 
 For each alert you choose, assign Conviction based on the total score and write a detailed but concise 2-4 sentence explanation that includes:
 - Key scoring highlights (which factors drove the decision)
-- Specific Dark Pool context: mention key large prints (above/below/near current price) and if they should be watched as support or resistance.
-- Specific GEX context: mention where largest gamma levels are and whether they suggest dealer suppressing moves or amplifying moves.
+- Specific Dark Pool context: mention key large prints (above/below/near current price) and if they should be watched as support or resistance/buy or sell pressure.
+- Specific GEX context: mention where largest gamma levels are and whether they suggest dealer suppressing moves or amplifying moves
 - Possible broader context (hedging, institutional positioning, insider knowledge, etc.)
 - Trade implication (quick trade vs longer hold)
 
