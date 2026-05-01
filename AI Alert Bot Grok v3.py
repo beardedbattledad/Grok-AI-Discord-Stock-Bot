@@ -127,8 +127,8 @@ Other Rules:
 
 For each alert you choose, assign Conviction: High / Medium / Exceptional and write a **detailed but concise** 2-4 sentence explanation that includes:
 - Why it flagged (volume spike, sweep, opening positions, IV spike, etc.)
-- Specific Dark Pool context: mention key prints (above/below/near current price) and what they likely mean (support/resistance, buy/sell pressure)
-- Specific GEX context: mention near current stock price and largest gamma levels and whether they suggest dealer suppressing moves or amplying moves
+- Specific Dark Pool context: mention key prints that are large in size (above/below/near current price) and if they should be watched as support or resistance/buy or sell pressure.
+- Specific GEX context: mention where largest gamma levels are and whether they suggest dealer suppressing moves or amplying moves
 - Possible broader context (hedging, institutional positioning, insider knowledge, etc.)
 - Trade implication (quick trade vs longer hold)
 
