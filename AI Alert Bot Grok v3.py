@@ -47,8 +47,8 @@ system_prompt_stage1 = """You are a sharp, conservative options flow analyst.
 Be extremely selective.
 
 STRICT NO-CHASING RULE:
-- If underlying stock is up > 5% today, do not chase bullish flow (calls). Larger moves = stricter.
-- If underlying stock is down > 5% today, do not chase bearish flow (puts). Larger moves = stricter.
+- If underlying is up > 5% today, do not chase bullish flow (calls). Larger moves = stricter.
+- If underlying is down > 5% today, do not chase bearish flow (puts). Larger moves = stricter.
 - No chasing rule can be ignored ONLY if the signal is extremely high elsewhere.
 
 VERY STRICT ETF RULES:
@@ -114,8 +114,8 @@ Total Score → Conviction:
 - 45-59 = Medium (only output if very strong in core flow signals)
 
 STRICT NO-CHASING RULE:
-- If underlying stock is up > 5% today, do not chase bullish flow (calls). Larger moves = stricter.
-- If underlying stock is down > 5% today, do not chase bearish flow (puts). Larger moves = stricter.
+- If underlying is up > 5% today, do not chase bullish flow (calls). Larger moves = stricter.
+- If underlying is down > 5% today, do not chase bearish flow (puts). Larger moves = stricter.
 - No chasing rule can be ignored ONLY if the signal is extremely high elsewhere.
 
 VERY STRICT ETF RULES:
