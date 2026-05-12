@@ -502,7 +502,8 @@ async def auto_alert_scanner():
 
     context_basic = json.dumps(unique_trades, default=str, indent=2)
 
-    # === STAGE 1: Basic filter only ===
+        # === STAGE 1: Quick filter on basic trades ===
+    print(f"  Stage 1: Quick filter on {len(unique_trades)} basic trades")
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
@@ -511,19 +512,32 @@ async def auto_alert_scanner():
                 json={
                     "model": "grok-4-fast-reasoning",
                     "messages": [
-                        {"role": "system", "content": system_prompt_stage1},  # your original prompt here
+                        {"role": "system", "content": system_prompt_stage1},
                         {"role": "user", "content": f"Here are the latest basic custom alert trades:\n{context_basic}\n\nApply all rules strictly. Output ONLY the alerts you like in the exact format, or nothing."}
                     ],
                     "temperature": 0.25,
                     "max_tokens": 2000
                 }
             )
+
+            print(f"  Stage 1 API Status: {resp.status_code}")
+
+            if resp.status_code != 200:
+                print(f"  Stage 1 API ERROR: {resp.status_code} - {resp.text[:500]}")
+                return
+
             data = resp.json()
+            print(f"  Stage 1 Raw response keys: {list(data.keys())}")
+
+            if "choices" not in data or not data["choices"]:
+                print(f"  Stage 1 ERROR: No 'choices' in response. Full response: {data}")
+                return
+
             ai_reply_stage1 = data["choices"][0]["message"]["content"].strip()
             print(f"  Stage 1 Grok reply length: {len(ai_reply_stage1)}")
+
     except Exception as e:
-        print(f"  Stage 1 error: {e}")
-        print("→ === CUSTOM ALERT SCAN COMPLETED ===\n")
+        print(f"  Stage 1 EXCEPTION: {e}")
         return
 
     # Extract selected alerts from Stage 1
