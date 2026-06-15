@@ -99,13 +99,13 @@ THINK STEP BY STEP:
 
 SCORING RUBRIC (use these exact ranges):
 
-- Premium Conviction (size relative to ticker tier)     : 0-20 points
+- Premium Conviction (size relative to ticker tier)     : 0-22 points
 - Raw Volume Strength (absolute contract volume)        : 0-12 points
-- Vol/OI Strength (new opening signal, volume vs OI)   : 0-13 points
+- Vol/OI Strength (new opening signal, volume vs OI)   : 0-15 points
 - Execution Aggression (Ask % for calls / Bid % for puts, sweeps) : 0-20 points
-- IV Change / Ascending Fill Signal                     : 0-15 points
-- No-Chasing Compliance + Market Context                : 0-8 points
-- Dark Pool Confirmation (support/resistance prints)    : 0-7 points
+- IV Change / Ascending Fill Signal                     : 0-13 points
+- No-Chasing Compliance + Market Context                : 0-5 points
+- Dark Pool Confirmation (support/resistance prints)    : 0-8 points
 - GEX Alignment (positive/negative gamma near strike)   : 0-5 points
 
 Total Score → Conviction:
